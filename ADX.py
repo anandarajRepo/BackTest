@@ -1,0 +1,891 @@
+import sqlite3
+import pandas as pd
+import numpy as np
+import json
+import glob
+import os
+from datetime import datetime, time
+import pytz
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import warnings
+
+warnings.filterwarnings('ignore')
+
+
+class MultiDatabaseDIBacktester:
+    def __init__(self, data_folder="data", symbols=None, period=14, volume_threshold_percentile=50,
+                 trailing_stop_pct=3.0, initial_capital=100000, square_off_time="15:20"):
+        """
+        Initialize the Multi-Database Multi-Symbol DI Crossover Backtester
+
+        Parameters:
+        - data_folder: Folder containing database files (default: "data")
+        - symbols: List of trading symbols to backtest
+        - period: Period for DI calculation (default 14)
+        - volume_threshold_percentile: Volume percentile threshold for good volume (default 50)
+        - trailing_stop_pct: Trailing stop loss percentage (default 3%)
+        - initial_capital: Starting capital for backtesting (per symbol)
+        - square_off_time: Time to square off all positions in HH:MM format (default "15:20" for 3:20 PM)
+        """
+        self.data_folder = data_folder
+        self.db_files = self.find_database_files()
+        self.symbols = symbols or []
+        self.period = period
+        self.volume_threshold_percentile = volume_threshold_percentile
+        self.trailing_stop_pct = trailing_stop_pct / 100
+        self.initial_capital = initial_capital
+        self.square_off_time = self.parse_square_off_time(square_off_time)
+        self.results = {}
+        self.combined_data = {}
+
+        # Set up IST timezone
+        self.ist_tz = pytz.timezone('Asia/Kolkata')
+
+        print(f"Data folder: {self.data_folder}")
+        print(f"Square-off time: {square_off_time} IST")
+        print(f"Found {len(self.db_files)} database files:")
+        for db_file in self.db_files:
+            print(f"  - {os.path.basename(db_file)}")
+
+    def parse_square_off_time(self, time_str):
+        """Parse square-off time string to time object"""
+        try:
+            hour, minute = map(int, time_str.split(':'))
+            return time(hour, minute)
+        except:
+            print(f"Invalid square-off time format: {time_str}. Using default 15:20")
+            return time(15, 20)
+
+    def find_database_files(self):
+        """Find all database files in the data folder"""
+        if not os.path.exists(self.data_folder):
+            print(f"Data folder '{self.data_folder}' not found!")
+            return []
+
+        # Look for .db files in the data folder
+        db_pattern = os.path.join(self.data_folder, "*.db")
+        db_files = glob.glob(db_pattern)
+
+        if not db_files:
+            print(f"No .db files found in '{self.data_folder}' folder!")
+            return []
+
+        # Sort files to ensure chronological order
+        db_files.sort()
+        return db_files
+
+    def load_data_from_all_databases(self, symbol):
+        """Load and combine data from all database files for a specific symbol"""
+        combined_df = pd.DataFrame()
+
+        for db_file in self.db_files:
+            try:
+                print(f"  Loading {symbol} from {os.path.basename(db_file)}")
+                df = self.load_data_from_single_db(db_file, symbol)
+
+                if df is not None and not df.empty:
+                    # Add source database info
+                    df['source_db'] = os.path.basename(db_file)
+                    combined_df = pd.concat([combined_df, df], ignore_index=False)
+
+            except Exception as e:
+                print(f"    Error loading from {db_file}: {e}")
+                continue
+
+        if combined_df.empty:
+            print(f"  No data found for {symbol} across all databases")
+            return None
+
+        # Sort by timestamp and remove duplicates
+        combined_df = combined_df.sort_index()
+        combined_df = combined_df[~combined_df.index.duplicated(keep='first')]
+
+        print(f"  Combined {len(combined_df)} data points for {symbol} from {len(self.db_files)} databases")
+        return combined_df
+
+    def load_data_from_single_db(self, db_path, symbol):
+        """Load data from a single database file"""
+        try:
+            conn = sqlite3.connect(db_path)
+
+            # First check if symbol exists in this database
+            check_query = "SELECT COUNT(*) FROM market_data WHERE symbol = ?"
+            count_result = pd.read_sql_query(check_query, conn, params=(symbol,))
+
+            if count_result.iloc[0, 0] == 0:
+                conn.close()
+                return None
+
+            query = """
+            SELECT timestamp, symbol, ltp, high_price, low_price, close_price, 
+                   volume, raw_data
+            FROM market_data 
+            WHERE symbol = ? 
+            ORDER BY timestamp
+            """
+
+            df = pd.read_sql_query(query, conn, params=(symbol,))
+            conn.close()
+
+            if df.empty:
+                return None
+
+            # Parse raw_data to get additional fields
+            def parse_raw_data(raw_data_str):
+                try:
+                    if raw_data_str:
+                        raw_data = json.loads(raw_data_str)
+                        return pd.Series({
+                            'high_raw': raw_data.get('high_price', np.nan),
+                            'low_raw': raw_data.get('low_price', np.nan),
+                            'volume_raw': raw_data.get('vol_traded_today', 0)
+                        })
+                    else:
+                        return pd.Series({'high_raw': np.nan, 'low_raw': np.nan, 'volume_raw': 0})
+                except:
+                    return pd.Series({'high_raw': np.nan, 'low_raw': np.nan, 'volume_raw': 0})
+
+            # Apply parsing and fill missing values
+            raw_parsed = df['raw_data'].apply(parse_raw_data)
+            df = pd.concat([df, raw_parsed], axis=1)
+
+            # Use raw data values where available, otherwise use main columns
+            df['high'] = df['high_raw'].fillna(df['high_price']).fillna(df['ltp'])
+            df['low'] = df['low_raw'].fillna(df['low_price']).fillna(df['ltp'])
+            df['close'] = df['close_price'].fillna(df['ltp'])
+            df['volume_final'] = df['volume_raw'].fillna(df['volume']).fillna(0)
+
+            # Convert timestamp to datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.set_index('timestamp')
+
+            # Remove rows with missing critical data
+            df = df.dropna(subset=['close', 'high', 'low'])
+
+            return df[['close', 'high', 'low', 'volume_final']].copy()
+
+        except Exception as e:
+            print(f"    Error accessing database {db_path}: {e}")
+            return None
+
+    def get_database_date_ranges(self):
+        """Get date ranges for each database file"""
+        date_ranges = {}
+
+        for db_file in self.db_files:
+            try:
+                conn = sqlite3.connect(db_file)
+                query = "SELECT MIN(timestamp) as min_date, MAX(timestamp) as max_date FROM market_data"
+                result = pd.read_sql_query(query, conn)
+                conn.close()
+
+                if not result.empty:
+                    date_ranges[os.path.basename(db_file)] = {
+                        'min_date': result.iloc[0]['min_date'],
+                        'max_date': result.iloc[0]['max_date'],
+                        'file_path': db_file
+                    }
+            except Exception as e:
+                print(f"Error getting date range for {db_file}: {e}")
+
+        return date_ranges
+
+    def calculate_di(self, df):
+        """Calculate +DI and -DI indicators"""
+        # Calculate True Range (TR)
+        df['prev_close'] = df['close'].shift(1)
+        df['tr1'] = df['high'] - df['low']
+        df['tr2'] = abs(df['high'] - df['prev_close'])
+        df['tr3'] = abs(df['low'] - df['prev_close'])
+        df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+
+        # Calculate Directional Movements
+        df['dm_plus'] = np.where(
+            (df['high'] - df['high'].shift(1)) > (df['low'].shift(1) - df['low']),
+            np.maximum(df['high'] - df['high'].shift(1), 0),
+            0
+        )
+
+        df['dm_minus'] = np.where(
+            (df['low'].shift(1) - df['low']) > (df['high'] - df['high'].shift(1)),
+            np.maximum(df['low'].shift(1) - df['low'], 0),
+            0
+        )
+
+        # Smooth the values using Wilder's smoothing (EMA with alpha = 1/period)
+        alpha = 1 / self.period
+
+        df['tr_smooth'] = df['tr'].ewm(alpha=alpha, adjust=False).mean()
+        df['dm_plus_smooth'] = df['dm_plus'].ewm(alpha=alpha, adjust=False).mean()
+        df['dm_minus_smooth'] = df['dm_minus'].ewm(alpha=alpha, adjust=False).mean()
+
+        # Calculate +DI and -DI
+        df['di_plus'] = 100 * (df['dm_plus_smooth'] / df['tr_smooth'])
+        df['di_minus'] = 100 * (df['dm_minus_smooth'] / df['tr_smooth'])
+
+        # Calculate ADX for reference
+        df['dx'] = 100 * abs(df['di_plus'] - df['di_minus']) / (df['di_plus'] + df['di_minus'])
+        df['adx'] = df['dx'].ewm(alpha=alpha, adjust=False).mean()
+
+        return df
+
+    def identify_good_volume(self, df):
+        """Identify periods with good volume based on percentile threshold"""
+        volume_threshold = df['volume_final'].quantile(self.volume_threshold_percentile / 100)
+        df['good_volume'] = df['volume_final'] > volume_threshold
+        return df
+
+    def generate_signals(self, df):
+        """Generate buy/sell signals based on DI crossover"""
+        df['di_plus_prev'] = df['di_plus'].shift(1)
+        df['di_minus_prev'] = df['di_minus'].shift(1)
+
+        # Buy signal: +DI crosses above -DI with good volume
+        df['buy_signal'] = (
+                (df['di_plus'] > df['di_minus']) &
+                (df['di_plus_prev'] <= df['di_minus_prev']) &
+                (df['good_volume'])
+        )
+
+        # Sell signal: -DI crosses above +DI
+        df['sell_signal'] = (
+                (df['di_minus'] > df['di_plus']) &
+                (df['di_minus_prev'] <= df['di_plus_prev'])
+        )
+
+        return df
+
+    def is_square_off_time(self, timestamp):
+        """Check if the given timestamp is at or after the square-off time"""
+        try:
+            # Convert to IST if timezone info is available
+            if timestamp.tz is None:
+                # Assume the timestamp is already in IST if no timezone info
+                ist_time = timestamp
+            else:
+                ist_time = timestamp.astimezone(self.ist_tz)
+
+            current_time = ist_time.time()
+            return current_time >= self.square_off_time
+        except:
+            # Fallback: use simple time comparison
+            return timestamp.time() >= self.square_off_time
+
+    def backtest_single_symbol(self, symbol):
+        """Backtest strategy for a single symbol with 3:20 PM IST square-off"""
+        print(f"\nStarting backtest for {symbol}")
+
+        # Load and combine data from all databases
+        df = self.load_data_from_all_databases(symbol)
+
+        if df is None or len(df) < self.period * 2:
+            print(f"Insufficient data for {symbol}. Skipping.")
+            return None
+
+        # Store combined data for later analysis
+        self.combined_data[symbol] = df.copy()
+
+        # Calculate indicators
+        df = self.calculate_di(df)
+        df = self.identify_good_volume(df)
+        df = self.generate_signals(df)
+
+        # Add trading day and square-off time information
+        df['trading_day'] = df.index.date
+        df['is_square_off_time'] = df.index.map(self.is_square_off_time)
+
+        # Initialize trading variables
+        cash = self.initial_capital
+        position = 0  # 0: no position, 1: long position
+        entry_price = 0
+        trailing_stop_price = 0
+        portfolio_value = []
+        trades = []
+        entry_day = None
+
+        for i in range(len(df)):
+            current_price = df.iloc[i]['close']
+            current_date = df.index[i]
+            current_day = df.iloc[i]['trading_day']
+            is_square_off = df.iloc[i]['is_square_off_time']
+
+            # Check if we're at or past square-off time (3:20 PM IST)
+            if position == 1 and is_square_off:
+                # Force square-off at 3:20 PM IST
+                shares = trades[-1]['shares']  # Get shares from last buy
+                proceeds = shares * current_price
+                cash += proceeds
+                position = 0
+
+                trades.append({
+                    'date': current_date,
+                    'action': 'SELL',
+                    'price': current_price,
+                    'shares': shares,
+                    'cash': cash,
+                    'reason': 'SQUARE_OFF_3_20_PM',
+                    'di_plus': df.iloc[i]['di_plus'],
+                    'di_minus': df.iloc[i]['di_minus'],
+                    'source_db': df.iloc[i].get('source_db', 'Unknown')
+                })
+
+                # Reset for next day
+                entry_day = None
+
+            # Check for buy signal (only if not in position and not at/after square-off time)
+            elif df.iloc[i]['buy_signal'] and position == 0 and not is_square_off:
+                # Enter long position
+                shares = int(cash / current_price)
+                if shares > 0:
+                    position = 1
+                    entry_price = current_price
+                    entry_day = current_day
+                    trailing_stop_price = entry_price * (1 - self.trailing_stop_pct)
+                    cost = shares * current_price
+                    cash -= cost
+
+                    trades.append({
+                        'date': current_date,
+                        'action': 'BUY',
+                        'price': current_price,
+                        'shares': shares,
+                        'cash': cash,
+                        'di_plus': df.iloc[i]['di_plus'],
+                        'di_minus': df.iloc[i]['di_minus'],
+                        'source_db': df.iloc[i].get('source_db', 'Unknown'),
+                        'entry_day': entry_day
+                    })
+
+            # Check for sell signals or trailing stop (only if in position and same day and before square-off)
+            elif position == 1 and entry_day == current_day and not is_square_off:
+                # Update trailing stop
+                if current_price > entry_price:
+                    new_trailing_stop = current_price * (1 - self.trailing_stop_pct)
+                    trailing_stop_price = max(trailing_stop_price, new_trailing_stop)
+
+                # Check exit conditions (excluding square-off as it's handled above)
+                should_exit = (
+                        df.iloc[i]['sell_signal'] or  # DI crossover sell signal
+                        current_price <= trailing_stop_price  # Trailing stop hit
+                )
+
+                if should_exit:
+                    # Exit position
+                    exit_reason = 'SELL_SIGNAL' if df.iloc[i]['sell_signal'] else 'TRAILING_STOP'
+                    shares = trades[-1]['shares']  # Get shares from last buy
+                    proceeds = shares * current_price
+                    cash += proceeds
+                    position = 0
+
+                    trades.append({
+                        'date': current_date,
+                        'action': 'SELL',
+                        'price': current_price,
+                        'shares': shares,
+                        'cash': cash,
+                        'reason': exit_reason,
+                        'di_plus': df.iloc[i]['di_plus'],
+                        'di_minus': df.iloc[i]['di_minus'],
+                        'source_db': df.iloc[i].get('source_db', 'Unknown')
+                    })
+
+                    # Reset for potential new trade same day
+                    entry_day = None
+
+            # Calculate portfolio value
+            if position == 1:
+                shares = trades[-1]['shares']
+                portfolio_val = cash + (shares * current_price)
+            else:
+                portfolio_val = cash
+
+            portfolio_value.append({
+                'date': current_date,
+                'value': portfolio_val,
+                'position': position,
+                'trading_day': current_day,
+                'is_square_off_time': is_square_off
+            })
+
+        # Final check - ensure no overnight positions
+        if position == 1:
+            print(f"Warning: {symbol} ended with open position. This should not happen with square-off strategy.")
+
+        # Calculate metrics
+        portfolio_df = pd.DataFrame(portfolio_value)
+        metrics = self.calculate_metrics(portfolio_df, trades)
+
+        # Add intraday-specific metrics
+        intraday_metrics = self.calculate_intraday_metrics(trades)
+        metrics.update(intraday_metrics)
+
+        return {
+            'symbol': symbol,
+            'data': df,
+            'portfolio': portfolio_df,
+            'trades': trades,
+            'metrics': metrics,
+            'data_summary': self.get_data_summary(df)
+        }
+
+    def calculate_intraday_metrics(self, trades):
+        """Calculate intraday-specific performance metrics including 3:20 PM square-offs"""
+        if not trades:
+            return {
+                'total_intraday_trades': 0,
+                'avg_trade_duration_minutes': 0,
+                'same_day_trades': 0,
+                'square_off_3_20_closures': 0,
+                'signal_exits': 0,
+                'trailing_stop_exits': 0,
+                'intraday_win_rate': 0,
+                'avg_intraday_return': 0
+            }
+
+        buy_trades = [t for t in trades if t['action'] == 'BUY']
+        sell_trades = [t for t in trades if t['action'] == 'SELL']
+
+        # Calculate trade durations and categorize exits
+        trade_durations = []
+        same_day_count = 0
+        square_off_3_20_count = 0
+        signal_exit_count = 0
+        trailing_stop_count = 0
+        intraday_returns = []
+
+        for i in range(min(len(buy_trades), len(sell_trades))):
+            buy_trade = buy_trades[i]
+            sell_trade = sell_trades[i]
+
+            # Calculate duration
+            buy_time = pd.to_datetime(buy_trade['date'])
+            sell_time = pd.to_datetime(sell_trade['date'])
+            duration_minutes = (sell_time - buy_time).total_seconds() / 60
+            trade_durations.append(duration_minutes)
+
+            # Check if same day
+            if buy_time.date() == sell_time.date():
+                same_day_count += 1
+
+            # Categorize exit reasons
+            exit_reason = sell_trade.get('reason', 'UNKNOWN')
+            if exit_reason == 'SQUARE_OFF_3_20_PM':
+                square_off_3_20_count += 1
+            elif exit_reason == 'SELL_SIGNAL':
+                signal_exit_count += 1
+            elif exit_reason == 'TRAILING_STOP':
+                trailing_stop_count += 1
+
+            # Calculate return
+            trade_return = (sell_trade['price'] - buy_trade['price']) / buy_trade['price']
+            intraday_returns.append(trade_return)
+
+        # Calculate metrics
+        avg_duration = np.mean(trade_durations) if trade_durations else 0
+        intraday_win_rate = sum(1 for r in intraday_returns if r > 0) / len(intraday_returns) if intraday_returns else 0
+        avg_intraday_return = np.mean(intraday_returns) if intraday_returns else 0
+
+        return {
+            'total_intraday_trades': len(buy_trades),
+            'avg_trade_duration_minutes': avg_duration,
+            'same_day_trades': same_day_count,
+            'square_off_3_20_closures': square_off_3_20_count,
+            'signal_exits': signal_exit_count,
+            'trailing_stop_exits': trailing_stop_count,
+            'intraday_win_rate': intraday_win_rate,
+            'avg_intraday_return': avg_intraday_return
+        }
+
+    def get_data_summary(self, df):
+        """Get summary statistics for the data"""
+        unique_days = len(df['trading_day'].unique()) if 'trading_day' in df.columns else len(df.index.date)
+
+        return {
+            'total_records': len(df),
+            'date_range': f"{df.index.min()} to {df.index.max()}",
+            'trading_days': unique_days,
+            'avg_daily_volume': df['volume_final'].mean(),
+            'databases_used': df['source_db'].nunique() if 'source_db' in df.columns else 0,
+            'avg_records_per_day': len(df) / unique_days if unique_days > 0 else 0
+        }
+
+    def calculate_metrics(self, portfolio_df, trades):
+        """Calculate performance metrics"""
+        total_return = (portfolio_df.iloc[-1]['value'] - self.initial_capital) / self.initial_capital
+
+        # Calculate trade-based metrics
+        buy_trades = [t for t in trades if t['action'] == 'BUY']
+        sell_trades = [t for t in trades if t['action'] == 'SELL']
+
+        trade_returns = []
+        for i in range(min(len(buy_trades), len(sell_trades))):
+            buy_price = buy_trades[i]['price']
+            sell_price = sell_trades[i]['price']
+            trade_return = (sell_price - buy_price) / buy_price
+            trade_returns.append(trade_return)
+
+        if trade_returns:
+            win_rate = sum(1 for r in trade_returns if r > 0) / len(trade_returns)
+            avg_trade_return = np.mean(trade_returns)
+            max_trade_return = max(trade_returns)
+            min_trade_return = min(trade_returns)
+        else:
+            win_rate = avg_trade_return = max_trade_return = min_trade_return = 0
+
+        # Calculate portfolio-based metrics
+        portfolio_df['returns'] = portfolio_df['value'].pct_change()
+        sharpe_ratio = portfolio_df['returns'].mean() / portfolio_df['returns'].std() * np.sqrt(252) if portfolio_df['returns'].std() > 0 else 0
+
+        max_dd = self.calculate_max_drawdown(portfolio_df['value'])
+
+        return {
+            'total_return': total_return,
+            'total_trades': len(buy_trades),
+            'win_rate': win_rate,
+            'avg_trade_return': avg_trade_return,
+            'max_trade_return': max_trade_return,
+            'min_trade_return': min_trade_return,
+            'sharpe_ratio': sharpe_ratio,
+            'max_drawdown': max_dd,
+            'final_value': portfolio_df.iloc[-1]['value']
+        }
+
+    def calculate_max_drawdown(self, portfolio_values):
+        """Calculate maximum drawdown"""
+        peak = portfolio_values.expanding().max()
+        drawdown = (portfolio_values - peak) / peak
+        return abs(drawdown.min())
+
+    def run_backtest_sequential(self):
+        """Run backtest for all symbols sequentially"""
+        print(f"\nStarting multi-database backtest for {len(self.symbols)} symbols")
+        print(f"Parameters: Period={self.period}, Volume Threshold={self.volume_threshold_percentile}th percentile, Trailing Stop={self.trailing_stop_pct * 100}%")
+        print(f"Database files: {len(self.db_files)}")
+
+        for symbol in self.symbols:
+            try:
+                result = self.backtest_single_symbol(symbol)
+                if result:
+                    self.results[symbol] = result
+            except Exception as exc:
+                print(f'{symbol} generated an exception: {exc}')
+                import traceback
+                traceback.print_exc()
+
+        return self.results
+
+    def create_summary_report(self):
+        """Create a summary report of all backtests with 3:20 PM square-off metrics"""
+        if not self.results:
+            print("No results to summarize.")
+            return None
+
+        summary_data = []
+        for symbol, result in self.results.items():
+            metrics = result['metrics']
+            data_summary = result['data_summary']
+
+            summary_data.append({
+                'Symbol': symbol.split(':')[1].replace('-EQ', ''),  # Clean symbol name
+                'Total Return (%)': metrics['total_return'] * 100,
+                'Final Value': metrics['final_value'],
+                'Total Trades': metrics['total_trades'],
+                'Win Rate (%)': metrics['win_rate'] * 100,
+                'Avg Trade Return (%)': metrics['avg_trade_return'] * 100,
+                'Best Trade (%)': metrics['max_trade_return'] * 100,
+                'Worst Trade (%)': metrics['min_trade_return'] * 100,
+                'Sharpe Ratio': metrics['sharpe_ratio'],
+                'Max Drawdown (%)': metrics['max_drawdown'] * 100,
+                'Intraday Trades': metrics.get('total_intraday_trades', 0),
+                'Same Day Trades': metrics.get('same_day_trades', 0),
+                '3:20 PM Square-offs': metrics.get('square_off_3_20_closures', 0),
+                'Signal Exits': metrics.get('signal_exits', 0),
+                'Trailing Stop Exits': metrics.get('trailing_stop_exits', 0),
+                'Avg Duration (min)': metrics.get('avg_trade_duration_minutes', 0),
+                'Intraday Win Rate (%)': metrics.get('intraday_win_rate', 0) * 100,
+                'Data Points': data_summary['total_records'],
+                'Trading Days': data_summary['trading_days'],
+                'Avg Records/Day': data_summary.get('avg_records_per_day', 0)
+            })
+
+        summary_df = pd.DataFrame(summary_data)
+        summary_df = summary_df.sort_values('Total Return (%)', ascending=False)
+
+        return summary_df
+
+    def create_database_analysis_report(self):
+        """Create analysis report for database coverage"""
+        print("\n" + "=" * 80)
+        print("DATABASE ANALYSIS REPORT")
+        print("=" * 80)
+
+        # Get date ranges for each database
+        date_ranges = self.get_database_date_ranges()
+
+        print(f"\nDatabase Files Found: {len(self.db_files)}")
+        print("-" * 50)
+
+        for db_name, info in date_ranges.items():
+            print(f"File: {db_name}")
+            print(f"  Date Range: {info['min_date']} to {info['max_date']}")
+            print(f"  Full Path: {info['file_path']}")
+            print()
+
+        # Analyze symbol coverage across databases
+        if self.combined_data:
+            print("Symbol Data Coverage:")
+            print("-" * 30)
+
+            for symbol, df in self.combined_data.items():
+                if 'source_db' in df.columns:
+                    db_counts = df['source_db'].value_counts()
+                    print(f"\n{symbol}:")
+                    for db_file, count in db_counts.items():
+                        print(f"  {db_file}: {count} records")
+                    print(f"  Total: {len(df)} records")
+                    print(f"  Date range: {df.index.min()} to {df.index.max()}")
+
+    def export_results(self, filename_prefix="multi_db_di_crossover"):
+        """Export all results to CSV files"""
+        if not self.results:
+            print("No results to export.")
+            return
+
+        # Export summary
+        summary_df = self.create_summary_report()
+        summary_filename = f"{filename_prefix}_summary.csv"
+        summary_df.to_csv(summary_filename, index=False)
+        print(f"Summary exported to {summary_filename}")
+
+        # Export individual trades for each symbol
+        all_trades = []
+        for symbol, result in self.results.items():
+            trades_df = pd.DataFrame(result['trades'])
+            if not trades_df.empty:
+                trades_df['symbol'] = symbol
+                all_trades.append(trades_df)
+
+        if all_trades:
+            combined_trades = pd.concat(all_trades, ignore_index=True)
+            trades_filename = f"{filename_prefix}_all_trades.csv"
+            combined_trades.to_csv(trades_filename, index=False)
+            print(f"All trades exported to {trades_filename}")
+
+        # Export database analysis
+        date_ranges = self.get_database_date_ranges()
+        if date_ranges:
+            db_analysis = pd.DataFrame.from_dict(date_ranges, orient='index')
+            db_filename = f"{filename_prefix}_database_analysis.csv"
+            db_analysis.to_csv(db_filename)
+            print(f"Database analysis exported to {db_filename}")
+
+        # Export 3:20 PM square-off analysis
+        self.export_square_off_analysis(filename_prefix)
+
+    def export_results(self, filename_prefix="multi_db_di_crossover"):
+        """Export all results to CSV files"""
+        if not self.results:
+            print("No results to export.")
+            return
+
+        # Export summary
+        summary_df = self.create_summary_report()
+        summary_filename = f"{filename_prefix}_summary.csv"
+        summary_df.to_csv(summary_filename, index=False)
+        print(f"Summary exported to {summary_filename}")
+
+        # Export individual trades for each symbol
+        all_trades = []
+        for symbol, result in self.results.items():
+            trades_df = pd.DataFrame(result['trades'])
+            if not trades_df.empty:
+                trades_df['symbol'] = symbol
+                all_trades.append(trades_df)
+
+        if all_trades:
+            combined_trades = pd.concat(all_trades, ignore_index=True)
+            trades_filename = f"{filename_prefix}_all_trades.csv"
+            combined_trades.to_csv(trades_filename, index=False)
+            print(f"All trades exported to {trades_filename}")
+
+        # Export database analysis
+        date_ranges = self.get_database_date_ranges()
+        db_analysis = pd.DataFrame.from_dict(date_ranges, orient='index')
+        db_filename = f"{filename_prefix}_database_analysis.csv"
+        db_analysis.to_csv(db_filename)
+        print(f"Database analysis exported to {db_filename}")
+
+# Example usage
+if __name__ == "__main__":
+    # Define the symbols to backtest
+    symbols = [
+        "NSE:SBIN-EQ",  # State Bank of India
+        "NSE:RELIANCE-EQ",  # Reliance Industries
+        "NSE:TCS-EQ",  # Tata Consultancy Services
+        "NSE:INFY-EQ",  # Infosys
+        "NSE:HDFCBANK-EQ",  # HDFC Bank
+        "NSE:ICICIBANK-EQ",  # ICICI Bank
+        "NSE:LT-EQ",  # Larsen & Toubro
+        "NSE:WIPRO-EQ",  # Wipro
+        "NSE:MARUTI-EQ",  # Maruti Suzuki
+        "NSE:ITC-EQ"  # ITC
+    ]
+
+    # Initialize multi-database backtester for 3:20 PM SQUARE-OFF STRATEGY
+    backtester = MultiDatabaseDIBacktester(
+        data_folder="data",  # Folder containing database files
+        symbols=symbols,  # List of symbols to backtest
+        period=14,  # DI calculation period
+        volume_threshold_percentile=60,  # Volume filter (60th percentile)
+        trailing_stop_pct=5.0,  # 5% trailing stop loss
+        initial_capital=100000,  # Starting capital per symbol
+        square_off_time="15:20"  # 3:20 PM IST square-off time
+    )
+
+    print("=" * 100)
+    print("3:20 PM IST SQUARE-OFF DI CROSSOVER STRATEGY")
+    print("=" * 100)
+    print("Strategy Rules:")
+    print("1. All positions MUST be squared off at 3:20 PM IST daily")
+    print("2. No overnight/positional trades allowed")
+    print("3. Automatic square-off at 3:20 PM regardless of P&L")
+    print("4. Buy signals ignored at or after 3:20 PM")
+    print("5. Multiple intraday trades allowed before 3:20 PM")
+    print("6. Data read from 'data' folder containing .db files")
+    print("=" * 100)
+
+    try:
+        # Check if data folder and databases exist
+        if not backtester.db_files:
+            print("No database files found!")
+            print("Please ensure:")
+            print("1. Create a 'data' folder in the script directory")
+            print("2. Place your .db files in the 'data' folder")
+            print("3. Expected files: fyers_market_data_*.db")
+            exit(1)
+
+        # Create database analysis report
+        backtester.create_database_analysis_report()
+
+        # Run backtest
+        print("\nStarting 3:20 PM square-off backtest...")
+        results = backtester.run_backtest_sequential()
+
+        if results:
+            print(f"\nBacktest completed for {len(results)} symbols across {len(backtester.db_files)} databases")
+
+            # Create and display summary report
+            summary_df = backtester.create_summary_report()
+            print("\n" + "=" * 150)
+            print("INTRADAY 3:20 PM SQUARE-OFF STRATEGY BACKTEST SUMMARY")
+            print("=" * 150)
+            print(summary_df.round(2).to_string(index=False))
+
+            # Export results (plots removed)
+            print("\nExporting results to CSV files...")
+            backtester.export_results("intraday_3_20_square_off_strategy")
+
+            # Performance ranking
+            print("\n" + "=" * 100)
+            print("TOP PERFORMERS BY TOTAL RETURN (3:20 PM SQUARE-OFF STRATEGY):")
+            print("=" * 100)
+            top_performers = summary_df.head(5)[['Symbol', 'Total Return (%)', 'Intraday Win Rate (%)', '3:20 PM Square-offs', 'Signal Exits', 'Avg Duration (min)']]
+            print(top_performers.to_string(index=False))
+
+            print("\n" + "=" * 100)
+            print("3:20 PM SQUARE-OFF STRATEGY EFFECTIVENESS ANALYSIS:")
+            print("=" * 100)
+
+            # Calculate overall strategy statistics
+            total_symbols = len(results)
+            profitable_symbols = len([r for r in results.values() if r['metrics']['total_return'] > 0])
+            avg_return = summary_df['Total Return (%)'].mean()
+            avg_win_rate = summary_df['Intraday Win Rate (%)'].mean()
+            avg_trades = summary_df['Intraday Trades'].mean()
+            avg_duration = summary_df['Avg Duration (min)'].mean()
+            total_same_day_trades = summary_df['Same Day Trades'].sum()
+            total_square_offs = summary_df['3:20 PM Square-offs'].sum()
+            total_signal_exits = summary_df['Signal Exits'].sum()
+            total_trailing_stops = summary_df['Trailing Stop Exits'].sum()
+
+            print(f"Symbols Tested: {total_symbols}")
+            print(f"Profitable Symbols: {profitable_symbols} ({profitable_symbols / total_symbols * 100:.1f}%)")
+            print(f"Average Return: {avg_return:.2f}%")
+            print(f"Average Intraday Win Rate: {avg_win_rate:.1f}%")
+            print(f"Average Intraday Trades per Symbol: {avg_trades:.1f}")
+            print(f"Average Trade Duration: {avg_duration:.1f} minutes")
+            print(f"Total Same-Day Trades: {total_same_day_trades}")
+            print(f"Total 3:20 PM Square-offs: {total_square_offs}")
+            print(f"Total Signal-based Exits: {total_signal_exits}")
+            print(f"Total Trailing Stop Exits: {total_trailing_stops}")
+
+            # Calculate exit breakdown percentages
+            total_exits = total_square_offs + total_signal_exits + total_trailing_stops
+            if total_exits > 0:
+                print(f"\nExit Breakdown:")
+                print(f"  3:20 PM Square-offs: {total_square_offs} ({total_square_offs / total_exits * 100:.1f}%)")
+                print(f"  Signal-based Exits: {total_signal_exits} ({total_signal_exits / total_exits * 100:.1f}%)")
+                print(f"  Trailing Stop Exits: {total_trailing_stops} ({total_trailing_stops / total_exits * 100:.1f}%)")
+
+            # Strategy insights
+            print("\n" + "=" * 100)
+            print("3:20 PM SQUARE-OFF STRATEGY INSIGHTS:")
+            print("=" * 100)
+
+            # Most square-off dependent symbols
+            high_square_off = summary_df.nlargest(3, '3:20 PM Square-offs')[['Symbol', '3:20 PM Square-offs', 'Total Return (%)']]
+            best_signal_exits = summary_df.nlargest(3, 'Signal Exits')[['Symbol', 'Signal Exits', 'Total Return (%)']]
+
+            print("Symbols with Most 3:20 PM Square-offs:")
+            print(high_square_off.to_string(index=False))
+
+            print("\nSymbols with Most Signal-based Exits:")
+            print(best_signal_exits.to_string(index=False))
+
+            # Time efficiency analysis
+            fastest_trades = summary_df.nsmallest(3, 'Avg Duration (min)')[['Symbol', 'Avg Duration (min)', 'Intraday Win Rate (%)']]
+            print("\nFastest Average Trade Execution:")
+            print(fastest_trades.to_string(index=False))
+
+            # Database coverage analysis
+            print("\n" + "=" * 100)
+            print("DATABASE COVERAGE SUMMARY:")
+            print("=" * 100)
+
+            total_data_points = summary_df['Data Points'].sum()
+            total_trading_days = summary_df['Trading Days'].sum()
+
+            print(f"Total Data Points Processed: {total_data_points:,}")
+            print(f"Total Trading Days Covered: {total_trading_days}")
+            print(f"Databases Used: {len(backtester.db_files)}")
+            print(f"Data Folder: {backtester.data_folder}")
+
+            # Best performing symbol details
+            best_symbol = summary_df.iloc[0]['Symbol']
+            best_return = summary_df.iloc[0]['Total Return (%)']
+            best_square_offs = summary_df.iloc[0]['3:20 PM Square-offs']
+            print(f"\nBest Performing Symbol: {best_symbol} (+{best_return:.2f}%)")
+            print(f"3:20 PM Square-offs for best performer: {best_square_offs}")
+
+            print("\n" + "=" * 100)
+            print("FILES EXPORTED:")
+            print("=" * 100)
+            print("1. intraday_3_20_square_off_strategy_summary.csv - Performance summary")
+            print("2. intraday_3_20_square_off_strategy_all_trades.csv - All trade details")
+            print("3. intraday_3_20_square_off_strategy_database_analysis.csv - Database info")
+            print("4. intraday_3_20_square_off_strategy_square_off_analysis.csv - 3:20 PM analysis")
+            print("=" * 100)
+
+        else:
+            print("No successful backtests completed.")
+            print("Please check:")
+            print("1. Database files exist in 'data' folder")
+            print("2. Symbol names match exactly with database records")
+            print("3. Database schema matches expected format")
+            print("4. Sufficient data available for analysis")
+
+    except Exception as e:
+        print(f"Error running 3:20 PM square-off backtest: {e}")
+        import traceback
+
+        traceback.print_exc()
