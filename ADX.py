@@ -14,27 +14,29 @@ warnings.filterwarnings('ignore')
 
 class MultiDatabaseDIBacktester:
     def __init__(self, data_folder="data", symbols=None, period=14, volume_threshold_percentile=50,
-                 trailing_stop_pct=3.0, initial_capital=100000, square_off_time="15:20"):
+                 trailing_stop_pct=3.0, initial_capital=100000, square_off_time="15:20",
+                 min_data_points=100):
         """
         Initialize the Multi-Database Multi-Symbol DI Crossover Backtester
 
         Parameters:
         - data_folder: Folder containing database files (default: "data")
-        - symbols: List of trading symbols to backtest
+        - symbols: List of trading symbols to backtest (if None, auto-detect from databases)
         - period: Period for DI calculation (default 14)
         - volume_threshold_percentile: Volume percentile threshold for good volume (default 50)
         - trailing_stop_pct: Trailing stop loss percentage (default 3%)
         - initial_capital: Starting capital for backtesting (per symbol)
         - square_off_time: Time to square off all positions in HH:MM format (default "15:20" for 3:20 PM)
+        - min_data_points: Minimum data points required for a symbol to be included (default 100)
         """
         self.data_folder = data_folder
         self.db_files = self.find_database_files()
-        self.symbols = symbols or []
         self.period = period
         self.volume_threshold_percentile = volume_threshold_percentile
         self.trailing_stop_pct = trailing_stop_pct / 100
         self.initial_capital = initial_capital
         self.square_off_time = self.parse_square_off_time(square_off_time)
+        self.min_data_points = min_data_points
         self.results = {}
         self.combined_data = {}
 
@@ -43,9 +45,21 @@ class MultiDatabaseDIBacktester:
 
         print(f"Data folder: {self.data_folder}")
         print(f"Square-off time: {square_off_time} IST")
+        print(f"Minimum data points required per symbol: {self.min_data_points}")
         print(f"Found {len(self.db_files)} database files:")
         for db_file in self.db_files:
             print(f"  - {os.path.basename(db_file)}")
+
+        # Auto-detect symbols if not provided
+        if symbols is None:
+            print("\nAuto-detecting symbols from database files...")
+            self.symbols = self.auto_detect_symbols()
+        else:
+            self.symbols = symbols
+
+        print(f"\nSymbols to backtest: {len(self.symbols)}")
+        for symbol in self.symbols:
+            print(f"  - {symbol}")
 
     def parse_square_off_time(self, time_str):
         """Parse square-off time string to time object"""
@@ -73,6 +87,140 @@ class MultiDatabaseDIBacktester:
         # Sort files to ensure chronological order
         db_files.sort()
         return db_files
+
+    def auto_detect_symbols(self):
+        """Automatically detect all symbols from database files with data quality filtering"""
+        all_symbols = set()
+        symbol_stats = {}
+
+        print("Scanning database files for symbols...")
+
+        for db_file in self.db_files:
+            try:
+                print(f"  Scanning {os.path.basename(db_file)}...")
+                conn = sqlite3.connect(db_file)
+
+                # Get all unique symbols and their record counts
+                query = """
+                SELECT symbol, COUNT(*) as record_count,
+                       MIN(timestamp) as first_record,
+                       MAX(timestamp) as last_record
+                FROM market_data 
+                GROUP BY symbol
+                HAVING COUNT(*) >= ?
+                ORDER BY record_count DESC
+                """
+
+                symbols_df = pd.read_sql_query(query, conn, params=(self.min_data_points,))
+                conn.close()
+
+                if not symbols_df.empty:
+                    print(f"    Found {len(symbols_df)} symbols with >= {self.min_data_points} records")
+
+                    for _, row in symbols_df.iterrows():
+                        symbol = row['symbol']
+                        all_symbols.add(symbol)
+
+                        # Track symbol statistics across databases
+                        if symbol not in symbol_stats:
+                            symbol_stats[symbol] = {
+                                'total_records': 0,
+                                'databases': [],
+                                'first_seen': row['first_record'],
+                                'last_seen': row['last_record']
+                            }
+
+                        symbol_stats[symbol]['total_records'] += row['record_count']
+                        symbol_stats[symbol]['databases'].append(os.path.basename(db_file))
+
+                        # Update date range
+                        if row['first_record'] < symbol_stats[symbol]['first_seen']:
+                            symbol_stats[symbol]['first_seen'] = row['first_record']
+                        if row['last_record'] > symbol_stats[symbol]['last_seen']:
+                            symbol_stats[symbol]['last_seen'] = row['last_record']
+                else:
+                    print(f"    No symbols found with >= {self.min_data_points} records")
+
+            except Exception as e:
+                print(f"    Error scanning {db_file}: {e}")
+                continue
+
+        # Filter symbols based on data quality
+        filtered_symbols = []
+        print(f"\nSymbol Quality Analysis:")
+        print("-" * 80)
+        print(f"{'Symbol':<25} {'Records':<10} {'Databases':<12} {'Date Range'}")
+        print("-" * 80)
+
+        # Sort symbols by total records (best data first)
+        sorted_symbols = sorted(symbol_stats.items(),
+                                key=lambda x: x[1]['total_records'],
+                                reverse=True)
+
+        for symbol, stats in sorted_symbols:
+            date_range = f"{stats['first_seen'][:10]} to {stats['last_seen'][:10]}"
+            databases_count = len(stats['databases'])
+
+            print(f"{symbol:<25} {stats['total_records']:<10} {databases_count:<12} {date_range}")
+
+            # Include symbol if it has sufficient data
+            if stats['total_records'] >= self.min_data_points:
+                filtered_symbols.append(symbol)
+
+        print("-" * 80)
+        print(f"Selected {len(filtered_symbols)} symbols for backtesting")
+
+        if not filtered_symbols:
+            print("\nWARNING: No symbols found with sufficient data!")
+            print(f"Consider reducing min_data_points (currently {self.min_data_points})")
+
+        return filtered_symbols
+
+    def get_symbol_info(self, symbol):
+        """Get detailed information about a specific symbol across all databases"""
+        symbol_info = {
+            'databases': [],
+            'total_records': 0,
+            'date_range': None,
+            'avg_volume': 0
+        }
+
+        for db_file in self.db_files:
+            try:
+                conn = sqlite3.connect(db_file)
+                query = """
+                SELECT COUNT(*) as count,
+                       MIN(timestamp) as min_date,
+                       MAX(timestamp) as max_date,
+                       AVG(volume) as avg_vol
+                FROM market_data 
+                WHERE symbol = ?
+                """
+
+                result = pd.read_sql_query(query, conn, params=(symbol,))
+                conn.close()
+
+                if result.iloc[0]['count'] > 0:
+                    symbol_info['databases'].append(os.path.basename(db_file))
+                    symbol_info['total_records'] += result.iloc[0]['count']
+
+                    if symbol_info['date_range'] is None:
+                        symbol_info['date_range'] = [result.iloc[0]['min_date'], result.iloc[0]['max_date']]
+                    else:
+                        if result.iloc[0]['min_date'] < symbol_info['date_range'][0]:
+                            symbol_info['date_range'][0] = result.iloc[0]['min_date']
+                        if result.iloc[0]['max_date'] > symbol_info['date_range'][1]:
+                            symbol_info['date_range'][1] = result.iloc[0]['max_date']
+
+                    symbol_info['avg_volume'] += result.iloc[0]['avg_vol'] or 0
+
+            except Exception as e:
+                continue
+
+        if symbol_info['databases']:
+            symbol_info['avg_volume'] /= len(symbol_info['databases'])
+
+        return symbol_info
 
     def load_data_from_all_databases(self, symbol):
         """Load and combine data from all database files for a specific symbol"""
@@ -586,7 +734,7 @@ class MultiDatabaseDIBacktester:
             data_summary = result['data_summary']
 
             summary_data.append({
-                'Symbol': symbol.split(':')[1].replace('-EQ', ''),  # Clean symbol name
+                'Symbol': symbol.split(':')[1].replace('-EQ', '') if ':' in symbol else symbol.replace('-EQ', ''),  # Clean symbol name
                 'Total Return (%)': metrics['total_return'] * 100,
                 'Final Value': metrics['final_value'],
                 'Total Trades': metrics['total_trades'],
@@ -679,79 +827,62 @@ class MultiDatabaseDIBacktester:
             db_analysis.to_csv(db_filename)
             print(f"Database analysis exported to {db_filename}")
 
-        # Export 3:20 PM square-off analysis
-        self.export_square_off_analysis(filename_prefix)
+        # Export symbol detection analysis
+        self.export_symbol_analysis(filename_prefix)
 
-    def export_results(self, filename_prefix="multi_db_di_crossover"):
-        """Export all results to CSV files"""
-        if not self.results:
-            print("No results to export.")
-            return
+    def export_symbol_analysis(self, filename_prefix):
+        """Export symbol detection and quality analysis"""
+        symbol_analysis = []
 
-        # Export summary
-        summary_df = self.create_summary_report()
-        summary_filename = f"{filename_prefix}_summary.csv"
-        summary_df.to_csv(summary_filename, index=False)
-        print(f"Summary exported to {summary_filename}")
+        for symbol in self.symbols:
+            symbol_info = self.get_symbol_info(symbol)
 
-        # Export individual trades for each symbol
-        all_trades = []
-        for symbol, result in self.results.items():
-            trades_df = pd.DataFrame(result['trades'])
-            if not trades_df.empty:
-                trades_df['symbol'] = symbol
-                all_trades.append(trades_df)
+            symbol_analysis.append({
+                'Symbol': symbol,
+                'Clean_Name': symbol.split(':')[1].replace('-EQ', '') if ':' in symbol else symbol.replace('-EQ', ''),
+                'Total_Records': symbol_info['total_records'],
+                'Databases_Count': len(symbol_info['databases']),
+                'Databases': ', '.join(symbol_info['databases']),
+                'Date_Range_Start': symbol_info['date_range'][0] if symbol_info['date_range'] else '',
+                'Date_Range_End': symbol_info['date_range'][1] if symbol_info['date_range'] else '',
+                'Avg_Volume': symbol_info['avg_volume'],
+                'Backtested': symbol in self.results
+            })
 
-        if all_trades:
-            combined_trades = pd.concat(all_trades, ignore_index=True)
-            trades_filename = f"{filename_prefix}_all_trades.csv"
-            combined_trades.to_csv(trades_filename, index=False)
-            print(f"All trades exported to {trades_filename}")
+        symbol_df = pd.DataFrame(symbol_analysis)
+        symbol_df = symbol_df.sort_values('Total_Records', ascending=False)
 
-        # Export database analysis
-        date_ranges = self.get_database_date_ranges()
-        db_analysis = pd.DataFrame.from_dict(date_ranges, orient='index')
-        db_filename = f"{filename_prefix}_database_analysis.csv"
-        db_analysis.to_csv(db_filename)
-        print(f"Database analysis exported to {db_filename}")
+        symbol_filename = f"{filename_prefix}_symbol_analysis.csv"
+        symbol_df.to_csv(symbol_filename, index=False)
+        print(f"Symbol analysis exported to {symbol_filename}")
+
 
 # Example usage
 if __name__ == "__main__":
-    # Define the symbols to backtest
-    symbols = [
-        "NSE:SBIN-EQ",  # State Bank of India
-        "NSE:RELIANCE-EQ",  # Reliance Industries
-        "NSE:TCS-EQ",  # Tata Consultancy Services
-        "NSE:INFY-EQ",  # Infosys
-        "NSE:HDFCBANK-EQ",  # HDFC Bank
-        "NSE:ICICIBANK-EQ",  # ICICI Bank
-        "NSE:LT-EQ",  # Larsen & Toubro
-        "NSE:WIPRO-EQ",  # Wipro
-        "NSE:MARUTI-EQ",  # Maruti Suzuki
-        "NSE:ITC-EQ"  # ITC
-    ]
-
-    # Initialize multi-database backtester for 3:20 PM SQUARE-OFF STRATEGY
+    # Initialize multi-database backtester with AUTO-DETECTION of symbols
     backtester = MultiDatabaseDIBacktester(
         data_folder="data",  # Folder containing database files
-        symbols=symbols,  # List of symbols to backtest
+        symbols=None,  # Auto-detect symbols from databases (set to None)
         period=14,  # DI calculation period
         volume_threshold_percentile=60,  # Volume filter (60th percentile)
         trailing_stop_pct=5.0,  # 5% trailing stop loss
         initial_capital=100000,  # Starting capital per symbol
-        square_off_time="15:20"  # 3:20 PM IST square-off time
+        square_off_time="15:20",  # 3:20 PM IST square-off time
+        min_data_points=100  # Minimum data points required per symbol
     )
 
     print("=" * 100)
-    print("3:20 PM IST SQUARE-OFF DI CROSSOVER STRATEGY")
+    print("AUTO-DETECTED SYMBOLS 3:20 PM IST SQUARE-OFF DI CROSSOVER STRATEGY")
     print("=" * 100)
     print("Strategy Rules:")
-    print("1. All positions MUST be squared off at 3:20 PM IST daily")
-    print("2. No overnight/positional trades allowed")
-    print("3. Automatic square-off at 3:20 PM regardless of P&L")
-    print("4. Buy signals ignored at or after 3:20 PM")
-    print("5. Multiple intraday trades allowed before 3:20 PM")
-    print("6. Data read from 'data' folder containing .db files")
+    print("1. Symbols automatically detected from database files")
+    print("2. Only symbols with sufficient data included")
+    print("3. All positions MUST be squared off at 3:20 PM IST daily")
+    print("4. No overnight/positional trades allowed")
+    print("5. Automatic square-off at 3:20 PM regardless of P&L")
+    print("6. Buy signals ignored at or after 3:20 PM")
+    print("7. Multiple intraday trades allowed before 3:20 PM")
+    print("8. Data read from 'data' folder containing .db files")
     print("=" * 100)
 
     try:
@@ -764,11 +895,20 @@ if __name__ == "__main__":
             print("3. Expected files: fyers_market_data_*.db")
             exit(1)
 
+        # Check if symbols were detected
+        if not backtester.symbols:
+            print("No symbols detected with sufficient data!")
+            print("Please check:")
+            print("1. Database files contain market_data table")
+            print("2. Reduce min_data_points if needed")
+            print("3. Verify database schema matches expected format")
+            exit(1)
+
         # Create database analysis report
         backtester.create_database_analysis_report()
 
         # Run backtest
-        print("\nStarting 3:20 PM square-off backtest...")
+        print(f"\nStarting 3:20 PM square-off backtest for {len(backtester.symbols)} auto-detected symbols...")
         results = backtester.run_backtest_sequential()
 
         if results:
@@ -777,23 +917,23 @@ if __name__ == "__main__":
             # Create and display summary report
             summary_df = backtester.create_summary_report()
             print("\n" + "=" * 150)
-            print("INTRADAY 3:20 PM SQUARE-OFF STRATEGY BACKTEST SUMMARY")
+            print("AUTO-DETECTED SYMBOLS INTRADAY 3:20 PM SQUARE-OFF STRATEGY BACKTEST SUMMARY")
             print("=" * 150)
             print(summary_df.round(2).to_string(index=False))
 
-            # Export results (plots removed)
+            # Export results
             print("\nExporting results to CSV files...")
-            backtester.export_results("intraday_3_20_square_off_strategy")
+            backtester.export_results("auto_detected_intraday_3_20_square_off_strategy")
 
             # Performance ranking
             print("\n" + "=" * 100)
-            print("TOP PERFORMERS BY TOTAL RETURN (3:20 PM SQUARE-OFF STRATEGY):")
+            print("TOP PERFORMERS BY TOTAL RETURN (AUTO-DETECTED SYMBOLS 3:20 PM SQUARE-OFF):")
             print("=" * 100)
             top_performers = summary_df.head(5)[['Symbol', 'Total Return (%)', 'Intraday Win Rate (%)', '3:20 PM Square-offs', 'Signal Exits', 'Avg Duration (min)']]
             print(top_performers.to_string(index=False))
 
             print("\n" + "=" * 100)
-            print("3:20 PM SQUARE-OFF STRATEGY EFFECTIVENESS ANALYSIS:")
+            print("AUTO-DETECTED SYMBOLS 3:20 PM SQUARE-OFF STRATEGY EFFECTIVENESS ANALYSIS:")
             print("=" * 100)
 
             # Calculate overall strategy statistics
@@ -808,7 +948,8 @@ if __name__ == "__main__":
             total_signal_exits = summary_df['Signal Exits'].sum()
             total_trailing_stops = summary_df['Trailing Stop Exits'].sum()
 
-            print(f"Symbols Tested: {total_symbols}")
+            print(f"Symbols Auto-Detected: {len(backtester.symbols)}")
+            print(f"Symbols Successfully Backtested: {total_symbols}")
             print(f"Profitable Symbols: {profitable_symbols} ({profitable_symbols / total_symbols * 100:.1f}%)")
             print(f"Average Return: {avg_return:.2f}%")
             print(f"Average Intraday Win Rate: {avg_win_rate:.1f}%")
@@ -829,7 +970,7 @@ if __name__ == "__main__":
 
             # Strategy insights
             print("\n" + "=" * 100)
-            print("3:20 PM SQUARE-OFF STRATEGY INSIGHTS:")
+            print("AUTO-DETECTED SYMBOLS 3:20 PM SQUARE-OFF STRATEGY INSIGHTS:")
             print("=" * 100)
 
             # Most square-off dependent symbols
@@ -870,22 +1011,22 @@ if __name__ == "__main__":
             print("\n" + "=" * 100)
             print("FILES EXPORTED:")
             print("=" * 100)
-            print("1. intraday_3_20_square_off_strategy_summary.csv - Performance summary")
-            print("2. intraday_3_20_square_off_strategy_all_trades.csv - All trade details")
-            print("3. intraday_3_20_square_off_strategy_database_analysis.csv - Database info")
-            print("4. intraday_3_20_square_off_strategy_square_off_analysis.csv - 3:20 PM analysis")
+            print("1. auto_detected_intraday_3_20_square_off_strategy_summary.csv - Performance summary")
+            print("2. auto_detected_intraday_3_20_square_off_strategy_all_trades.csv - All trade details")
+            print("3. auto_detected_intraday_3_20_square_off_strategy_database_analysis.csv - Database info")
+            print("4. auto_detected_intraday_3_20_square_off_strategy_symbol_analysis.csv - Symbol detection analysis")
             print("=" * 100)
 
         else:
             print("No successful backtests completed.")
             print("Please check:")
             print("1. Database files exist in 'data' folder")
-            print("2. Symbol names match exactly with database records")
+            print("2. Symbols have sufficient data (min_data_points)")
             print("3. Database schema matches expected format")
             print("4. Sufficient data available for analysis")
 
     except Exception as e:
-        print(f"Error running 3:20 PM square-off backtest: {e}")
+        print(f"Error running auto-detected symbols 3:20 PM square-off backtest: {e}")
         import traceback
 
         traceback.print_exc()
