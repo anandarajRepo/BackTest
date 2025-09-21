@@ -468,13 +468,18 @@ class MultiDatabaseDIBacktester:
                 trades.append({
                     'date': current_date,
                     'action': 'SELL',
-                    'price': current_price,
+                    'price': round(current_price, 2),
                     'shares': shares,
-                    'cash': cash,
+                    'cash': round(cash, 2),
                     'reason': 'SQUARE_OFF_3_20_PM',
-                    'di_plus': df.iloc[i]['di_plus'],
-                    'di_minus': df.iloc[i]['di_minus'],
-                    'source_db': df.iloc[i].get('source_db', 'Unknown')
+                    'di_plus': round(df.iloc[i]['di_plus'], 2),
+                    'di_minus': round(df.iloc[i]['di_minus'], 2),
+                    'source_db': df.iloc[i].get('source_db', 'Unknown'),
+                    'exit_time': current_date.strftime('%Y-%m-%d %H:%M:%S'),
+                    'exit_price': round(current_price, 2),
+                    'entry_price': round(trades[-1]['entry_price'], 2) if trades else 0,
+                    'trade_return_pct': round(((current_price - trades[-1]['entry_price']) / trades[-1]['entry_price'] * 100), 2) if trades else 0,
+                    'trade_pnl': round((shares * (current_price - trades[-1]['entry_price'])), 2) if trades else 0
                 })
 
                 # Reset for next day
@@ -495,13 +500,15 @@ class MultiDatabaseDIBacktester:
                     trades.append({
                         'date': current_date,
                         'action': 'BUY',
-                        'price': current_price,
+                        'price': round(current_price, 2),
                         'shares': shares,
-                        'cash': cash,
-                        'di_plus': df.iloc[i]['di_plus'],
-                        'di_minus': df.iloc[i]['di_minus'],
+                        'cash': round(cash, 2),
+                        'di_plus': round(df.iloc[i]['di_plus'], 2),
+                        'di_minus': round(df.iloc[i]['di_minus'], 2),
                         'source_db': df.iloc[i].get('source_db', 'Unknown'),
-                        'entry_day': entry_day
+                        'entry_day': entry_day,
+                        'entry_time': current_date.strftime('%Y-%m-%d %H:%M:%S'),
+                        'entry_price': round(current_price, 2)
                     })
 
             # Check for sell signals or trailing stop (only if in position and same day and before square-off)
@@ -528,13 +535,18 @@ class MultiDatabaseDIBacktester:
                     trades.append({
                         'date': current_date,
                         'action': 'SELL',
-                        'price': current_price,
+                        'price': round(current_price, 2),
                         'shares': shares,
-                        'cash': cash,
+                        'cash': round(cash, 2),
                         'reason': exit_reason,
-                        'di_plus': df.iloc[i]['di_plus'],
-                        'di_minus': df.iloc[i]['di_minus'],
-                        'source_db': df.iloc[i].get('source_db', 'Unknown')
+                        'di_plus': round(df.iloc[i]['di_plus'], 2),
+                        'di_minus': round(df.iloc[i]['di_minus'], 2),
+                        'source_db': df.iloc[i].get('source_db', 'Unknown'),
+                        'exit_time': current_date.strftime('%Y-%m-%d %H:%M:%S'),
+                        'exit_price': round(current_price, 2),
+                        'entry_price': round(trades[-1]['entry_price'], 2) if trades else 0,
+                        'trade_return_pct': round(((current_price - trades[-1]['entry_price']) / trades[-1]['entry_price'] * 100), 2) if trades else 0,
+                        'trade_pnl': round((shares * (current_price - trades[-1]['entry_price'])), 2) if trades else 0
                     })
 
                     # Reset for potential new trade same day
@@ -549,7 +561,7 @@ class MultiDatabaseDIBacktester:
 
             portfolio_value.append({
                 'date': current_date,
-                'value': portfolio_val,
+                'value': round(portfolio_val, 2),
                 'position': position,
                 'trading_day': current_day,
                 'is_square_off_time': is_square_off
@@ -635,13 +647,13 @@ class MultiDatabaseDIBacktester:
 
         return {
             'total_intraday_trades': len(buy_trades),
-            'avg_trade_duration_minutes': avg_duration,
+            'avg_trade_duration_minutes': round(avg_duration, 2),
             'same_day_trades': same_day_count,
             'square_off_3_20_closures': square_off_3_20_count,
             'signal_exits': signal_exit_count,
             'trailing_stop_exits': trailing_stop_count,
-            'intraday_win_rate': intraday_win_rate,
-            'avg_intraday_return': avg_intraday_return
+            'intraday_win_rate': round(intraday_win_rate, 4),
+            'avg_intraday_return': round(avg_intraday_return, 4)
         }
 
     def get_data_summary(self, df):
@@ -652,9 +664,9 @@ class MultiDatabaseDIBacktester:
             'total_records': len(df),
             'date_range': f"{df.index.min()} to {df.index.max()}",
             'trading_days': unique_days,
-            'avg_daily_volume': df['volume_final'].mean(),
+            'avg_daily_volume': round(df['volume_final'].mean(), 2),
             'databases_used': df['source_db'].nunique() if 'source_db' in df.columns else 0,
-            'avg_records_per_day': len(df) / unique_days if unique_days > 0 else 0
+            'avg_records_per_day': round(len(df) / unique_days, 2) if unique_days > 0 else 0
         }
 
     def calculate_metrics(self, portfolio_df, trades):
@@ -687,15 +699,15 @@ class MultiDatabaseDIBacktester:
         max_dd = self.calculate_max_drawdown(portfolio_df['value'])
 
         return {
-            'total_return': total_return,
+            'total_return': round(total_return, 4),
             'total_trades': len(buy_trades),
-            'win_rate': win_rate,
-            'avg_trade_return': avg_trade_return,
-            'max_trade_return': max_trade_return,
-            'min_trade_return': min_trade_return,
-            'sharpe_ratio': sharpe_ratio,
-            'max_drawdown': max_dd,
-            'final_value': portfolio_df.iloc[-1]['value']
+            'win_rate': round(win_rate, 4),
+            'avg_trade_return': round(avg_trade_return, 4),
+            'max_trade_return': round(max_trade_return, 4),
+            'min_trade_return': round(min_trade_return, 4),
+            'sharpe_ratio': round(sharpe_ratio, 4),
+            'max_drawdown': round(max_dd, 4),
+            'final_value': round(portfolio_df.iloc[-1]['value'], 2)
         }
 
     def calculate_max_drawdown(self, portfolio_values):
@@ -845,7 +857,7 @@ class MultiDatabaseDIBacktester:
                 'Databases': ', '.join(symbol_info['databases']),
                 'Date_Range_Start': symbol_info['date_range'][0] if symbol_info['date_range'] else '',
                 'Date_Range_End': symbol_info['date_range'][1] if symbol_info['date_range'] else '',
-                'Avg_Volume': symbol_info['avg_volume'],
+                'Avg_Volume': round(symbol_info['avg_volume'], 2),
                 'Backtested': symbol in self.results
             })
 
@@ -1015,6 +1027,8 @@ if __name__ == "__main__":
             print("2. auto_detected_intraday_3_20_square_off_strategy_all_trades.csv - All trade details")
             print("3. auto_detected_intraday_3_20_square_off_strategy_database_analysis.csv - Database info")
             print("4. auto_detected_intraday_3_20_square_off_strategy_symbol_analysis.csv - Symbol detection analysis")
+            print("5. auto_detected_intraday_3_20_square_off_strategy_detailed_trades.csv - Enhanced trade details with entry/exit")
+            print("6. auto_detected_intraday_3_20_square_off_strategy_trade_summary.csv - Trade performance summary")
             print("=" * 100)
 
         else:
