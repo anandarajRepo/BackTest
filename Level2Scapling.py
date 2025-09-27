@@ -735,7 +735,7 @@ class FixedMultiDatabaseBacktester:
             return df[available_columns].copy()
 
         except Exception as e:
-            print(f"    ❌ Error accessing database {db_path}: {e}")
+            print(f"    Error accessing database {db_path}: {e}")
             return None
 
     def test_connection(self):
@@ -929,7 +929,7 @@ def test_market_depth_parsing():
         "type": "dp", "symbol": "NSE:NIFTY25SEP25100CE", "processing_timestamp": "2025-09-25T09:36:00.379007"
     }
 
-    print("🧪 Testing Market Depth Parsing")
+    print("Testing Market Depth Parsing")
     print("=" * 50)
 
     # Test parsing
@@ -940,25 +940,25 @@ def test_market_depth_parsing():
     try:
         raw_data = json.loads(raw_data_str)
 
-        print(f"✅ Data type: {raw_data.get('type')}")
-        print(f"✅ Symbol: {raw_data.get('symbol')}")
-        print(f"✅ Best bid: {raw_data.get('bid_price1')} (size: {raw_data.get('bid_size1')})")
-        print(f"✅ Best ask: {raw_data.get('ask_price1')} (size: {raw_data.get('ask_size1')})")
+        print(f"Data type: {raw_data.get('type')}")
+        print(f"Symbol: {raw_data.get('symbol')}")
+        print(f"Best bid: {raw_data.get('bid_price1')} (size: {raw_data.get('bid_size1')})")
+        print(f"Best ask: {raw_data.get('ask_price1')} (size: {raw_data.get('ask_size1')})")
 
         # Calculate some metrics
         spread = raw_data.get('ask_price1') - raw_data.get('bid_price1')
         total_bid_size = sum([raw_data.get(f'bid_size{i}', 0) for i in range(1, 6)])
         total_ask_size = sum([raw_data.get(f'ask_size{i}', 0) for i in range(1, 6)])
 
-        print(f"✅ Spread: {spread:.2f}")
-        print(f"✅ Total bid size: {total_bid_size}")
-        print(f"✅ Total ask size: {total_ask_size}")
-        print(f"✅ Order book imbalance: {(total_bid_size - total_ask_size) / (total_bid_size + total_ask_size):.3f}")
+        print(f"Spread: {spread:.2f}")
+        print(f"Total bid size: {total_bid_size}")
+        print(f"Total ask size: {total_ask_size}")
+        print(f"Order book imbalance: {(total_bid_size - total_ask_size) / (total_bid_size + total_ask_size):.3f}")
 
         return True
 
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         return False
 
 # USAGE EXAMPLE:
