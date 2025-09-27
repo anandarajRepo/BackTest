@@ -1,322 +1,64 @@
-# Quick fix for your existing backtesting code
-# Replace the find_database_files method in your existing classes
-
-def find_database_files(self):
-    """Find all database files in the data folder - ENHANCED VERSION"""
-
-    # Try multiple possible folder paths
-    possible_folders = [
-        self.data_folder,  # Original path
-        "data/marketupdate",
-        "data/symbolupdate",
-        "data",
-        os.path.join(os.getcwd(), "data", "marketupdate"),
-        os.path.join(os.getcwd(), "data", "symbolupdate"),
-        os.path.join(os.getcwd(), "data")
-    ]
-
-    print(f"Searching for database files...")
-
-    for folder in possible_folders:
-        print(f"  Checking folder: {folder}")
-
-        if not os.path.exists(folder):
-            print(f"    Folder does not exist: {folder}")
-            continue
-
-        # Try multiple file patterns
-        patterns = [
-            "*.db",
-            "*.sqlite",
-            "*.sqlite3",
-            "fyers_*.db",
-            "market_data_*.db",
-            "*market*.db"
-        ]
-
-        found_files = []
-        for pattern in patterns:
-            search_pattern = os.path.join(folder, pattern)
-            files = glob.glob(search_pattern)
-            found_files.extend(files)
-
-        # Remove duplicates
-        found_files = list(set(found_files))
-
-        if found_files:
-            print(f"    Found {len(found_files)} database files")
-
-            # Test each file to ensure it's a valid database
-            valid_files = []
-            for db_file in found_files:
-                try:
-                    conn = sqlite3.connect(db_file)
-
-                    # Check if market_data table exists
-                    tables_query = "SELECT name FROM sqlite_master WHERE type='table';"
-                    tables = pd.read_sql_query(tables_query, conn)
-
-                    if 'market_data' in tables['name'].values:
-                        # Quick count to ensure there's data
-                        count_query = "SELECT COUNT(*) FROM market_data LIMIT 1"
-                        count_result = pd.read_sql_query(count_query, conn)
-
-                        if count_result.iloc[0, 0] > 0:
-                            valid_files.append(db_file)
-                            print(f"       Valid: {os.path.basename(db_file)}")
-                        else:
-                            print(f"        Empty: {os.path.basename(db_file)}")
-                    else:
-                        print(f"       No market_data table: {os.path.basename(db_file)}")
-
-                    conn.close()
-
-                except Exception as e:
-                    print(f"       Invalid database: {os.path.basename(db_file)} - {e}")
-                    continue
-
-            if valid_files:
-                # Update the data folder to the working one
-                self.data_folder = folder
-                print(f"   Using folder: {folder}")
-                return sorted(valid_files)
-
-        else:
-            print(f"     No database files found in {folder}")
-
-    # If no files found anywhere, provide helpful error message
-    print(f"\n No database files found in any location!")
-    print(f"Searched folders:")
-    for folder in possible_folders:
-        print(f"  - {os.path.abspath(folder)}")
-
-    print(f"\nSuggestions:")
-    print(f"  1. Check if your database files are in one of the above folders")
-    print(f"  2. Update the data_folder parameter when initializing the backtester")
-    print(f"  3. Run the database test script to diagnose the issue")
-
-    return []
-
-
-# Enhanced initialization for your existing classes
-def __init__(self, data_folder="data/marketupdate", symbols=None, **kwargs):
-    """Enhanced initialization with better error handling"""
-
-    # Store original data folder
-    self.original_data_folder = data_folder
-    self.data_folder = data_folder
-
-    print(f"Initializing backtester...")
-    print(f"Looking for database files in: {data_folder}")
-
-    # Find database files (this will automatically try multiple folders)
-    self.db_files = self.find_database_files()
-
-    if not self.db_files:
-        raise FileNotFoundError(
-            f"No valid database files found! "
-            f"Please check your data folder path or run the database test script."
-        )
-
-    print(f"Found {len(self.db_files)} valid database files")
-    print(f"Using data folder: {self.data_folder}")
-
-    # Continue with rest of initialization...
-    # (your existing initialization code goes here)
-
-
-# Quick patch function you can call to fix existing instances
-def patch_existing_backtester(backtester_instance):
-    """Patch an existing backtester instance with enhanced database finding"""
-
-    import types
-
-    # Replace the find_database_files method
-    backtester_instance.find_database_files = types.MethodType(find_database_files, backtester_instance)
-
-    # Re-run database file discovery
-    print("Patching existing backtester instance...")
-    backtester_instance.db_files = backtester_instance.find_database_files()
-
-    if backtester_instance.db_files:
-        print(f"Patch successful! Found {len(backtester_instance.db_files)} database files")
-        return True
-    else:
-        print("Patch failed - no database files found")
-        return False
-
-
-def enhanced_find_database_files(self):
-    """Enhanced database file finder that searches multiple locations"""
-
-    # List of possible data folder locations
-    search_paths = [
-        self.data_folder,  # Original specified folder
-        "data/marketupdate",
-        "data/symbolupdate",
-        "data",
-        os.path.join(os.getcwd(), "data", "marketupdate"),
-        os.path.join(os.getcwd(), "data", "symbolupdate"),
-        os.path.join(os.getcwd(), "data"),
-        os.path.expanduser("~/data/marketupdate"),  # User home directory
-        os.path.expanduser("~/data/symbolupdate"),
-        os.path.expanduser("~/data")
-    ]
-
-    # File patterns to search for
-    file_patterns = [
-        "*.db",
-        "*.sqlite",
-        "*.sqlite3",
-        "fyers_*.db",
-        "market_data_*.db",
-        "*market*.db",
-        "*fyers*.db"
-    ]
-
-    print("Enhanced Database Search")
-    print("=" * 50)
-
-    all_found_files = []
-
-    for search_path in search_paths:
-        abs_path = os.path.abspath(search_path)
-        print(f"Searching: {search_path}")
-        print(f"   Absolute: {abs_path}")
-
-        if not os.path.exists(search_path):
-            print(f"   Path does not exist")
-            continue
-
-        # Search for files with each pattern
-        path_files = []
-        for pattern in file_patterns:
-            full_pattern = os.path.join(search_path, pattern)
-            found = glob.glob(full_pattern)
-            path_files.extend(found)
-
-        # Remove duplicates
-        path_files = list(set(path_files))
-
-        if path_files:
-            print(f"   Found {len(path_files)} database files")
-
-            # Validate each database file
-            valid_files = []
-            for db_file in path_files:
-                db_name = os.path.basename(db_file)
-                print(f"   Testing: {db_name}")
-
-                try:
-                    # Test database connection
-                    conn = sqlite3.connect(db_file)
-
-                    # Check for required table
-                    tables_query = "SELECT name FROM sqlite_master WHERE type='table';"
-                    tables_df = pd.read_sql_query(tables_query, conn)
-                    table_names = tables_df['name'].tolist()
-
-                    if 'market_data' not in table_names:
-                        print(f"     No market_data table (has: {table_names})")
-                        conn.close()
-                        continue
-
-                    # Check if table has data
-                    count_query = "SELECT COUNT(*) as count FROM market_data"
-                    count_df = pd.read_sql_query(count_query, conn)
-                    record_count = count_df.iloc[0]['count']
-
-                    if record_count == 0:
-                        print(f"     Empty table")
-                        conn.close()
-                        continue
-
-                    # Get additional info
-                    sample_query = "SELECT COUNT(DISTINCT symbol) as symbols FROM market_data"
-                    sample_df = pd.read_sql_query(sample_query, conn)
-                    symbol_count = sample_df.iloc[0]['symbols']
-
-                    conn.close()
-
-                    print(f"     Valid ({record_count:,} records, {symbol_count} symbols)")
-                    valid_files.append(db_file)
-
-                except Exception as e:
-                    print(f"     Error: {str(e)[:50]}...")
-                    continue
-
-            if valid_files:
-                print(f"   {len(valid_files)} valid database(s) in this path")
-                all_found_files.extend(valid_files)
-
-                # Update the data folder to the working path
-                self.data_folder = search_path
-                break  # Stop searching once we find valid files
-        else:
-            print(f"   No database files found")
-
-    # Remove duplicates and sort
-    all_found_files = sorted(list(set(all_found_files)))
-
-    print("\n" + "=" * 50)
-    if all_found_files:
-        print(f"FINAL RESULT: Found {len(all_found_files)} valid database files")
-        print(f"Using folder: {self.data_folder}")
-        print("Database files:")
-        for i, db_file in enumerate(all_found_files, 1):
-            print(f"   {i}. {os.path.basename(db_file)}")
-    else:
-        print("NO VALID DATABASE FILES FOUND!")
-        print("\n Troubleshooting suggestions:")
-        print("   1. Check if database files exist in any of the searched paths")
-        print("   2. Verify database files have .db extension")
-        print("   3. Ensure database files contain 'market_data' table with data")
-        print("   4. Run the database test script for detailed diagnosis")
-        print("\nSearched paths:")
-        for path in search_paths:
-            if os.path.exists(path):
-                print(f"   {os.path.abspath(path)}")
-            else:
-                print(f"   {os.path.abspath(path)} (does not exist)")
-
-    return all_found_files
-
-
-# COMPLETE WORKING EXAMPLE - Copy this into your script to replace existing classes
+# Complete Level 2 Scalping Backtester with Market Depth Analysis
 import sqlite3
 import pandas as pd
 import numpy as np
 import json
 import glob
 import os
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import pytz
 import warnings
+from typing import Dict, List, Tuple, Optional
+import concurrent.futures
+from dataclasses import dataclass
 
 warnings.filterwarnings('ignore')
 
 
-class FixedMultiDatabaseBacktester:
-    """Fixed version of the Multi-Database Backtester with enhanced database finding"""
+@dataclass
+class Trade:
+    """Trade record for tracking individual trades"""
+    entry_time: datetime
+    exit_time: datetime
+    symbol: str
+    side: str  # 'long' or 'short'
+    entry_price: float
+    exit_price: float
+    quantity: int
+    pnl: float
+    pnl_pct: float
+    exit_reason: str
+    holding_period: timedelta
 
-    def __init__(self, data_folder="data/marketupdate", symbols=None, period=14,
-                 volume_threshold_percentile=50, trailing_stop_pct=3.0,
-                 initial_capital=100000, square_off_time="15:20", min_data_points=100):
 
-        print("Initializing Fixed Multi-Database Backtester")
+class CompleteLevel2ScalpingBacktester:
+    """Complete Level 2 Scalping Backtester with Market Depth Analysis"""
+
+    def __init__(self, data_folder="data/marketupdate", symbols=None,
+                 initial_capital=100000, position_size_pct=10,
+                 min_spread_bps=5, max_spread_bps=50,
+                 min_volume_imbalance=0.3, trailing_stop_pct=2.0,
+                 square_off_time="15:20", min_data_points=100):
+
+        print("Initializing Complete Level 2 Scalping Backtester")
         print("=" * 60)
 
         # Store parameters
-        self.original_data_folder = data_folder
         self.data_folder = data_folder
-        self.period = period
-        self.volume_threshold_percentile = volume_threshold_percentile
-        self.trailing_stop_pct = trailing_stop_pct / 100
         self.initial_capital = initial_capital
+        self.position_size_pct = position_size_pct / 100
+        self.min_spread_bps = min_spread_bps
+        self.max_spread_bps = max_spread_bps
+        self.min_volume_imbalance = min_volume_imbalance
+        self.trailing_stop_pct = trailing_stop_pct / 100
         self.square_off_time = self.parse_square_off_time(square_off_time)
         self.min_data_points = min_data_points
-        self.results = {}
-        self.combined_data = {}
+
+        # Trading state
+        self.current_capital = initial_capital
+        self.positions = {}  # symbol -> position info
+        self.trades = []
+        self.daily_pnl = {}
 
         # Set up IST timezone
         self.ist_tz = pytz.timezone('Asia/Kolkata')
@@ -326,7 +68,7 @@ class FixedMultiDatabaseBacktester:
 
         if not self.db_files:
             raise FileNotFoundError(
-                "No valid database files found! Please check your database files or run the test script."
+                "No valid database files found! Please check your database files."
             )
 
         # Auto-detect symbols if not provided
@@ -339,720 +81,636 @@ class FixedMultiDatabaseBacktester:
         print(f"\nInitialization complete!")
         print(f"Symbols to backtest: {len(self.symbols)}")
         print(f"Database files: {len(self.db_files)}")
-        print(f"Data folder: {self.data_folder}")
 
     def enhanced_find_database_files(self):
-        """Enhanced database file finder that searches multiple locations"""
-        return enhanced_find_database_files(self)
+        """Enhanced database file finder"""
+        possible_folders = [
+            self.data_folder,
+            "data/marketupdate", "data/symbolupdate", "data",
+            os.path.join(os.getcwd(), "data", "marketupdate"),
+            os.path.join(os.getcwd(), "data", "symbolupdate"),
+            os.path.join(os.getcwd(), "data")
+        ]
+
+        patterns = ["*.db", "*.sqlite", "*.sqlite3", "fyers_*.db", "market_data_*.db"]
+
+        for folder in possible_folders:
+            if not os.path.exists(folder):
+                continue
+
+            found_files = []
+            for pattern in patterns:
+                found_files.extend(glob.glob(os.path.join(folder, pattern)))
+
+            if found_files:
+                valid_files = []
+                for db_file in found_files:
+                    try:
+                        conn = sqlite3.connect(db_file)
+                        tables = pd.read_sql_query(
+                            "SELECT name FROM sqlite_master WHERE type='table';", conn
+                        )
+                        if 'market_data' in tables['name'].values:
+                            count = pd.read_sql_query(
+                                "SELECT COUNT(*) FROM market_data", conn
+                            ).iloc[0, 0]
+                            if count > 0:
+                                valid_files.append(db_file)
+                        conn.close()
+                    except:
+                        continue
+
+                if valid_files:
+                    self.data_folder = folder
+                    return sorted(valid_files)
+
+        return []
 
     def parse_square_off_time(self, time_str):
-        """Parse square-off time string to time object"""
+        """Parse square-off time"""
         try:
             hour, minute = map(int, time_str.split(':'))
             return time(hour, minute)
         except:
-            print(f"Invalid square-off time format: {time_str}. Using default 15:20")
             return time(15, 20)
 
     def auto_detect_symbols(self):
-        """Auto-detect symbols from all databases"""
+        """Auto-detect symbols with sufficient data"""
         all_symbols = set()
         symbol_stats = {}
 
-        print("Scanning all databases for symbols...")
-
         for db_file in self.db_files:
             try:
-                db_name = os.path.basename(db_file)
-                print(f"  Scanning {db_name}...")
-
                 conn = sqlite3.connect(db_file)
-
                 query = """
-                SELECT symbol, COUNT(*) as record_count,
-                       MIN(timestamp) as first_record,
-                       MAX(timestamp) as last_record
+                SELECT symbol, COUNT(*) as record_count
                 FROM market_data 
                 GROUP BY symbol
                 HAVING COUNT(*) >= ?
                 ORDER BY record_count DESC
                 """
-
                 symbols_df = pd.read_sql_query(query, conn, params=(self.min_data_points,))
                 conn.close()
 
-                if not symbols_df.empty:
-                    print(f"    Found {len(symbols_df)} symbols with >= {self.min_data_points} records")
-
-                    for _, row in symbols_df.iterrows():
-                        symbol = row['symbol']
-                        all_symbols.add(symbol)
-
-                        if symbol not in symbol_stats:
-                            symbol_stats[symbol] = {
-                                'total_records': 0,
-                                'databases': [],
-                                'first_seen': row['first_record'],
-                                'last_seen': row['last_record']
-                            }
-
-                        symbol_stats[symbol]['total_records'] += row['record_count']
-                        symbol_stats[symbol]['databases'].append(db_name)
-
-                        # Update date range
-                        if row['first_record'] < symbol_stats[symbol]['first_seen']:
-                            symbol_stats[symbol]['first_seen'] = row['first_record']
-                        if row['last_record'] > symbol_stats[symbol]['last_seen']:
-                            symbol_stats[symbol]['last_seen'] = row['last_record']
-                else:
-                    print(f"    No symbols found with >= {self.min_data_points} records")
+                for _, row in symbols_df.iterrows():
+                    symbol = row['symbol']
+                    all_symbols.add(symbol)
+                    if symbol not in symbol_stats:
+                        symbol_stats[symbol] = 0
+                    symbol_stats[symbol] += row['record_count']
 
             except Exception as e:
-                print(f"    Error scanning {db_file}: {e}")
+                print(f"Error scanning {db_file}: {e}")
                 continue
 
-        # Filter and sort symbols
-        filtered_symbols = []
+        # Return top symbols by data availability
+        sorted_symbols = sorted(symbol_stats.items(), key=lambda x: x[1], reverse=True)
+        return [symbol for symbol, count in sorted_symbols[:20]]  # Top 20 symbols
 
-        print(f"\nSymbol Quality Analysis:")
-        print("-" * 80)
-        print(f"{'Symbol':<25} {'Records':<10} {'Databases':<12} {'Date Range'}")
-        print("-" * 80)
-
-        # Sort symbols by total records (best data first)
-        sorted_symbols = sorted(symbol_stats.items(),
-                                key=lambda x: x[1]['total_records'],
-                                reverse=True)
-
-        for symbol, stats in sorted_symbols:
-            date_range = f"{stats['first_seen'][:10]} to {stats['last_seen'][:10]}"
-            databases_count = len(stats['databases'])
-
-            print(f"{symbol:<25} {stats['total_records']:<10} {databases_count:<12} {date_range}")
-
-            # Include symbol if it has sufficient data
-            if stats['total_records'] >= self.min_data_points:
-                filtered_symbols.append(symbol)
-
-        print("-" * 80)
-        print(f"Selected {len(filtered_symbols)} symbols for backtesting")
-
-        if not filtered_symbols:
-            print(f"\nWARNING: No symbols found with sufficient data!")
-            print(f"Consider reducing min_data_points (currently {self.min_data_points})")
-
-        return filtered_symbols
-
-    def load_data_from_all_databases(self, symbol):
-        """Load and combine data from all database files for a specific symbol"""
+    def load_market_data(self, symbol):
+        """Load and process market data for a symbol"""
         combined_df = pd.DataFrame()
-
-        print(f"  Loading {symbol} from all databases...")
 
         for db_file in self.db_files:
             try:
-                db_name = os.path.basename(db_file)
-                df = self.load_data_from_single_db(db_file, symbol)
+                conn = sqlite3.connect(db_file)
+                query = """
+                SELECT timestamp, symbol, ltp, high_price, low_price, close_price, 
+                       volume, raw_data
+                FROM market_data 
+                WHERE symbol = ? 
+                ORDER BY timestamp
+                """
+                df = pd.read_sql_query(query, conn, params=(symbol,))
+                conn.close()
 
-                if df is not None and not df.empty:
-                    df['source_db'] = db_name
-                    combined_df = pd.concat([combined_df, df], ignore_index=False)
-                    print(f"    {db_name}: {len(df)} records")
+                if not df.empty:
+                    combined_df = pd.concat([combined_df, df], ignore_index=True)
 
             except Exception as e:
-                print(f"    Error loading from {db_file}: {e}")
+                print(f"Error loading from {db_file}: {e}")
                 continue
 
         if combined_df.empty:
-            print(f"  No data found for {symbol} across all databases")
             return None
 
-        # Sort by timestamp and remove duplicates
-        combined_df = combined_df.sort_index()
-        combined_df = combined_df[~combined_df.index.duplicated(keep='first')]
-
-        print(f"  Combined {len(combined_df)} data points for {symbol}")
+        # Process the data
+        combined_df = self.process_market_data(combined_df)
         return combined_df
 
-    def load_data_from_single_db(self, db_path, symbol):
-        """Load data from a single database file with market depth parsing"""
-        try:
-            conn = sqlite3.connect(db_path)
+    def process_market_data(self, df):
+        """Process raw market data into trading features"""
+        # Convert timestamp and set as index
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df = df.set_index('timestamp').sort_index()
 
-            # Check if symbol exists
-            check_query = "SELECT COUNT(*) FROM market_data WHERE symbol = ?"
-            count_result = pd.read_sql_query(check_query, conn, params=(symbol,))
-
-            if count_result.iloc[0, 0] == 0:
-                conn.close()
-                return None
-
-            query = """
-            SELECT timestamp, symbol, ltp, high_price, low_price, close_price, 
-                   volume, raw_data
-            FROM market_data 
-            WHERE symbol = ? 
-            ORDER BY timestamp
-            """
-
-            df = pd.read_sql_query(query, conn, params=(symbol,))
-            conn.close()
-
-            if df.empty:
-                return None
-
-            # Parse raw_data to get market depth and other fields
-            def parse_raw_data(raw_data_str):
-                try:
-                    if raw_data_str:
-                        raw_data = json.loads(raw_data_str)
-
-                        # Check if this is market depth data
-                        if raw_data.get('type') == 'dp':
-                            # Market depth data structure
-                            return pd.Series({
-                                # Best bid/ask prices (Level 1)
-                                'best_bid_price': raw_data.get('bid_price1', np.nan),
-                                'best_ask_price': raw_data.get('ask_price1', np.nan),
-                                'best_bid_size': raw_data.get('bid_size1', 0),
-                                'best_ask_size': raw_data.get('ask_size1', 0),
-
-                                # All bid prices (5 levels)
-                                'bid_price1': raw_data.get('bid_price1', np.nan),
-                                'bid_price2': raw_data.get('bid_price2', np.nan),
-                                'bid_price3': raw_data.get('bid_price3', np.nan),
-                                'bid_price4': raw_data.get('bid_price4', np.nan),
-                                'bid_price5': raw_data.get('bid_price5', np.nan),
-
-                                # All ask prices (5 levels)
-                                'ask_price1': raw_data.get('ask_price1', np.nan),
-                                'ask_price2': raw_data.get('ask_price2', np.nan),
-                                'ask_price3': raw_data.get('ask_price3', np.nan),
-                                'ask_price4': raw_data.get('ask_price4', np.nan),
-                                'ask_price5': raw_data.get('ask_price5', np.nan),
-
-                                # All bid sizes (5 levels)
-                                'bid_size1': raw_data.get('bid_size1', 0),
-                                'bid_size2': raw_data.get('bid_size2', 0),
-                                'bid_size3': raw_data.get('bid_size3', 0),
-                                'bid_size4': raw_data.get('bid_size4', 0),
-                                'bid_size5': raw_data.get('bid_size5', 0),
-
-                                # All ask sizes (5 levels)
-                                'ask_size1': raw_data.get('ask_size1', 0),
-                                'ask_size2': raw_data.get('ask_size2', 0),
-                                'ask_size3': raw_data.get('ask_size3', 0),
-                                'ask_size4': raw_data.get('ask_size4', 0),
-                                'ask_size5': raw_data.get('ask_size5', 0),
-
-                                # Order counts (5 levels)
-                                'bid_order1': raw_data.get('bid_order1', 0),
-                                'bid_order2': raw_data.get('bid_order2', 0),
-                                'bid_order3': raw_data.get('bid_order3', 0),
-                                'bid_order4': raw_data.get('bid_order4', 0),
-                                'bid_order5': raw_data.get('bid_order5', 0),
-
-                                'ask_order1': raw_data.get('ask_order1', 0),
-                                'ask_order2': raw_data.get('ask_order2', 0),
-                                'ask_order3': raw_data.get('ask_order3', 0),
-                                'ask_order4': raw_data.get('ask_order4', 0),
-                                'ask_order5': raw_data.get('ask_order5', 0),
-
-                                # Calculated metrics
-                                'bid_ask_spread': raw_data.get('ask_price1', np.nan) - raw_data.get('bid_price1', np.nan) if raw_data.get('ask_price1') and raw_data.get(
-                                    'bid_price1') else np.nan,
-                                'total_bid_size': sum([raw_data.get(f'bid_size{i}', 0) for i in range(1, 6)]),
-                                'total_ask_size': sum([raw_data.get(f'ask_size{i}', 0) for i in range(1, 6)]),
-                                'total_bid_orders': sum([raw_data.get(f'bid_order{i}', 0) for i in range(1, 6)]),
-                                'total_ask_orders': sum([raw_data.get(f'ask_order{i}', 0) for i in range(1, 6)]),
-
-                                # Data type indicator
-                                'data_type': 'market_depth',
-                                'processing_timestamp': raw_data.get('processing_timestamp', ''),
-
-                                # Legacy fields for backward compatibility (using approximations)
-                                'high_raw': np.nan,  # Not available in market depth
-                                'low_raw': np.nan,  # Not available in market depth
-                                'volume_raw': 0  # Not available in market depth
-                            })
-                        else:
-                            # Legacy OHLC data structure or other types
-                            return pd.Series({
-                                # Legacy fields
-                                'high_raw': raw_data.get('high_price', np.nan),
-                                'low_raw': raw_data.get('low_price', np.nan),
-                                'volume_raw': raw_data.get('vol_traded_today', 0),
-
-                                # Market depth fields (will be NaN for legacy data)
-                                'best_bid_price': raw_data.get('bid_price', np.nan),
-                                'best_ask_price': raw_data.get('ask_price', np.nan),
-                                'best_bid_size': raw_data.get('bid_size', 0),
-                                'best_ask_size': raw_data.get('ask_size', 0),
-
-                                # All other market depth fields as NaN
-                                **{f'bid_price{i}': np.nan for i in range(1, 6)},
-                                **{f'ask_price{i}': np.nan for i in range(1, 6)},
-                                **{f'bid_size{i}': 0 for i in range(1, 6)},
-                                **{f'ask_size{i}': 0 for i in range(1, 6)},
-                                **{f'bid_order{i}': 0 for i in range(1, 6)},
-                                **{f'ask_order{i}': 0 for i in range(1, 6)},
-
-                                'bid_ask_spread': np.nan,
-                                'total_bid_size': 0,
-                                'total_ask_size': 0,
-                                'total_bid_orders': 0,
-                                'total_ask_orders': 0,
-                                'data_type': 'legacy',
-                                'processing_timestamp': ''
-                            })
-                    else:
-                        # No raw data available
-                        return pd.Series({
-                            # Legacy fields
-                            'high_raw': np.nan,
-                            'low_raw': np.nan,
-                            'volume_raw': 0,
-
-                            # Market depth fields
-                            'best_bid_price': np.nan,
-                            'best_ask_price': np.nan,
-                            'best_bid_size': 0,
-                            'best_ask_size': 0,
-
-                            # All market depth levels as NaN/0
-                            **{f'bid_price{i}': np.nan for i in range(1, 6)},
-                            **{f'ask_price{i}': np.nan for i in range(1, 6)},
-                            **{f'bid_size{i}': 0 for i in range(1, 6)},
-                            **{f'ask_size{i}': 0 for i in range(1, 6)},
-                            **{f'bid_order{i}': 0 for i in range(1, 6)},
-                            **{f'ask_order{i}': 0 for i in range(1, 6)},
-
-                            'bid_ask_spread': np.nan,
-                            'total_bid_size': 0,
-                            'total_ask_size': 0,
-                            'total_bid_orders': 0,
-                            'total_ask_orders': 0,
-                            'data_type': 'no_data',
-                            'processing_timestamp': ''
-                        })
-                except Exception as e:
-                    print(f"      ⚠️ Error parsing raw_data: {e}")
-                    # Return default values on error
+        # Parse raw market depth data
+        def parse_market_depth(raw_data_str):
+            try:
+                if not raw_data_str:
                     return pd.Series({
-                        'high_raw': np.nan, 'low_raw': np.nan, 'volume_raw': 0,
-                        'best_bid_price': np.nan, 'best_ask_price': np.nan,
-                        'best_bid_size': 0, 'best_ask_size': 0,
-                        **{f'bid_price{i}': np.nan for i in range(1, 6)},
-                        **{f'ask_price{i}': np.nan for i in range(1, 6)},
-                        **{f'bid_size{i}': 0 for i in range(1, 6)},
-                        **{f'ask_size{i}': 0 for i in range(1, 6)},
-                        **{f'bid_order{i}': 0 for i in range(1, 6)},
-                        **{f'ask_order{i}': 0 for i in range(1, 6)},
-                        'bid_ask_spread': np.nan, 'total_bid_size': 0, 'total_ask_size': 0,
-                        'total_bid_orders': 0, 'total_ask_orders': 0,
-                        'data_type': 'error', 'processing_timestamp': ''
+                        'bid_price1': np.nan, 'ask_price1': np.nan,
+                        'bid_size1': 0, 'ask_size1': 0,
+                        'total_bid_size': 0, 'total_ask_size': 0
                     })
 
-            # Apply parsing and fill missing values
-            raw_parsed = df['raw_data'].apply(parse_raw_data)
-            df = pd.concat([df, raw_parsed], axis=1)
+                raw_data = json.loads(raw_data_str)
 
-            # Use best available data for OHLC construction
-            # For market depth data, we'll approximate OHLC from bid/ask prices
+                if raw_data.get('type') == 'dp':
+                    # Market depth data
+                    total_bid = sum([raw_data.get(f'bid_size{i}', 0) for i in range(1, 6)])
+                    total_ask = sum([raw_data.get(f'ask_size{i}', 0) for i in range(1, 6)])
 
-            # High: Use the highest ask price or best ask if others not available
-            df['high'] = df[['ask_price1', 'ask_price2', 'ask_price3', 'ask_price4', 'ask_price5']].max(axis=1, skipna=True)
-            df['high'] = df['high'].fillna(df['best_ask_price']).fillna(df['high_price']).fillna(df['ltp'])
+                    return pd.Series({
+                        'bid_price1': raw_data.get('bid_price1', np.nan),
+                        'ask_price1': raw_data.get('ask_price1', np.nan),
+                        'bid_size1': raw_data.get('bid_size1', 0),
+                        'ask_size1': raw_data.get('ask_size1', 0),
+                        'total_bid_size': total_bid,
+                        'total_ask_size': total_ask
+                    })
+                else:
+                    # Legacy data - approximate bid/ask from LTP
+                    ltp = raw_data.get('ltp', np.nan)
+                    return pd.Series({
+                        'bid_price1': ltp * 0.999 if not np.isnan(ltp) else np.nan,
+                        'ask_price1': ltp * 1.001 if not np.isnan(ltp) else np.nan,
+                        'bid_size1': 100, 'ask_size1': 100,
+                        'total_bid_size': 500, 'total_ask_size': 500
+                    })
+            except:
+                return pd.Series({
+                    'bid_price1': np.nan, 'ask_price1': np.nan,
+                    'bid_size1': 0, 'ask_size1': 0,
+                    'total_bid_size': 0, 'total_ask_size': 0
+                })
 
-            # Low: Use the lowest bid price or best bid if others not available
-            df['low'] = df[['bid_price1', 'bid_price2', 'bid_price3', 'bid_price4', 'bid_price5']].min(axis=1, skipna=True)
-            df['low'] = df['low'].fillna(df['best_bid_price']).fillna(df['low_price']).fillna(df['ltp'])
+        # Parse market depth
+        depth_data = df['raw_data'].apply(parse_market_depth)
+        df = pd.concat([df, depth_data], axis=1)
 
-            # Close: Use LTP as the most recent trade price
-            df['close'] = df['close_price'].fillna(df['ltp'])
+        # Fill missing bid/ask with LTP approximations
+        df['bid_price1'] = df['bid_price1'].fillna(df['ltp'] * 0.999)
+        df['ask_price1'] = df['ask_price1'].fillna(df['ltp'] * 1.001)
 
-            # Volume: Use volume from database (market depth doesn't have volume)
-            df['volume_final'] = df['volume_raw'].fillna(df['volume']).fillna(0)
+        # Calculate trading features
+        df = self.calculate_trading_features(df)
 
-            # Handle bid/ask prices for order flow analysis
-            df['bid_price'] = df['best_bid_price'].fillna(df['close'] * 0.999)  # Approximate if missing
-            df['ask_price'] = df['best_ask_price'].fillna(df['close'] * 1.001)  # Approximate if missing
-            df['bid_size'] = df['best_bid_size'].fillna(0)
-            df['ask_size'] = df['best_ask_size'].fillna(0)
+        return df
 
-            # Market depth specific fields for advanced strategies
-            df['spread'] = df['bid_ask_spread'].fillna(df['ask_price'] - df['bid_price'])
-            df['spread_pct'] = df['spread'] / df['close'] * 100
+    def calculate_trading_features(self, df):
+        """Calculate Level 2 trading features"""
 
-            # Order book imbalance (more sophisticated with market depth)
-            df['order_book_imbalance'] = np.where(
-                (df['total_bid_size'] + df['total_ask_size']) > 0,
-                (df['total_bid_size'] - df['total_ask_size']) / (df['total_bid_size'] + df['total_ask_size']),
-                0
-            )
+        # Basic price features
+        df['price'] = df['ltp'].fillna(df['close_price'])
+        df['high'] = df['high_price'].fillna(df['price'])
+        df['low'] = df['low_price'].fillna(df['price'])
 
-            # Weighted mid price using level 1 sizes
-            df['weighted_mid_price'] = np.where(
-                (df['best_bid_size'] + df['best_ask_size']) > 0,
-                (df['best_bid_price'] * df['best_ask_size'] + df['best_ask_price'] * df['best_bid_size']) / (df['best_bid_size'] + df['best_ask_size']),
-                (df['best_bid_price'] + df['best_ask_price']) / 2
-            )
+        # Spread analysis
+        df['spread'] = df['ask_price1'] - df['bid_price1']
+        df['spread_bps'] = (df['spread'] / df['price']) * 10000
+        df['mid_price'] = (df['bid_price1'] + df['ask_price1']) / 2
 
-            # Convert timestamp to datetime
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df = df.set_index('timestamp')
+        # Volume imbalance
+        total_volume = df['total_bid_size'] + df['total_ask_size']
+        df['volume_imbalance'] = np.where(
+            total_volume > 0,
+            (df['total_bid_size'] - df['total_ask_size']) / total_volume,
+            0
+        )
 
-            # Remove rows with missing critical data
-            # df = df.dropna(subset=['close', 'high', 'low'])
+        # Level 1 imbalance
+        level1_volume = df['bid_size1'] + df['ask_size1']
+        df['level1_imbalance'] = np.where(
+            level1_volume > 0,
+            (df['bid_size1'] - df['ask_size1']) / level1_volume,
+            0
+        )
 
-            # Return comprehensive dataset with market depth information
-            return_columns = [
-                # Basic OHLC
-                'close', 'high', 'low', 'volume_final',
+        # Price pressure
+        df['price_pressure'] = np.where(
+            df['mid_price'] != 0,
+            (df['price'] - df['mid_price']) / df['mid_price'],
+            0
+        )
 
-                # Level 1 market depth (for basic order flow strategies)
-                'bid_price', 'ask_price', 'bid_size', 'ask_size',
+        # Momentum features
+        df['price_change'] = df['price'].pct_change()
+        df['price_momentum_5'] = df['price'].pct_change(5)
+        df['spread_momentum'] = df['spread_bps'].pct_change()
 
-                # All 5 levels of market depth (for advanced strategies)
-                'bid_price1', 'bid_price2', 'bid_price3', 'bid_price4', 'bid_price5',
-                'ask_price1', 'ask_price2', 'ask_price3', 'ask_price4', 'ask_price5',
-                'bid_size1', 'bid_size2', 'bid_size3', 'bid_size4', 'bid_size5',
-                'ask_size1', 'ask_size2', 'ask_size3', 'ask_size4', 'ask_size5',
-                'bid_order1', 'bid_order2', 'bid_order3', 'bid_order4', 'bid_order5',
-                'ask_order1', 'ask_order2', 'ask_order3', 'ask_order4', 'ask_order5',
+        # Volatility estimate
+        df['volatility_5min'] = df['price_change'].rolling(5).std()
 
-                # Calculated market depth metrics
-                'spread', 'spread_pct', 'order_book_imbalance', 'weighted_mid_price',
-                'total_bid_size', 'total_ask_size', 'total_bid_orders', 'total_ask_orders',
+        # Market microstructure features
+        df['effective_spread'] = 2 * abs(df['price'] - df['mid_price'])
+        df['relative_effective_spread'] = df['effective_spread'] / df['price']
 
-                # Data type indicator
-                'data_type'
-            ]
+        # Order flow toxicity (simplified)
+        df['order_flow_toxicity'] = abs(df['volume_imbalance']) * abs(df['price_pressure'])
 
-            # Only include columns that exist
-            available_columns = [col for col in return_columns if col in df.columns]
+        return df
 
-            return df[available_columns].copy()
+    def generate_signals(self, df):
+        """Generate Level 2 scalping signals"""
 
-        except Exception as e:
-            print(f"    Error accessing database {db_path}: {e}")
+        # Initialize signal columns
+        df['buy_signal'] = False
+        df['sell_signal'] = False
+        df['exit_signal'] = False
+
+        # Buy conditions (expect price to go up)
+        buy_conditions = (
+            # Spread is reasonable (not too wide, indicating good liquidity)
+                (df['spread_bps'] >= self.min_spread_bps) &
+                (df['spread_bps'] <= self.max_spread_bps) &
+
+                # Strong buying pressure in order book
+                (df['volume_imbalance'] > self.min_volume_imbalance) &
+                (df['level1_imbalance'] > 0.2) &
+
+                # Price is near or below mid (good entry)
+                (df['price_pressure'] <= 0.001) &
+
+                # Recent momentum is not too extreme
+                (abs(df['price_momentum_5']) < 0.01) &
+
+                # Volatility is manageable
+                (df['volatility_5min'] < 0.02) &
+
+                # Order flow is not too toxic
+                (df['order_flow_toxicity'] < 0.5)
+        )
+
+        # Sell conditions (expect price to go down)
+        sell_conditions = (
+            # Spread is reasonable
+                (df['spread_bps'] >= self.min_spread_bps) &
+                (df['spread_bps'] <= self.max_spread_bps) &
+
+                # Strong selling pressure
+                (df['volume_imbalance'] < -self.min_volume_imbalance) &
+                (df['level1_imbalance'] < -0.2) &
+
+                # Price is near or above mid
+                (df['price_pressure'] >= -0.001) &
+
+                # Momentum conditions
+                (abs(df['price_momentum_5']) < 0.01) &
+                (df['volatility_5min'] < 0.02) &
+                (df['order_flow_toxicity'] < 0.5)
+        )
+
+        df.loc[buy_conditions, 'buy_signal'] = True
+        df.loc[sell_conditions, 'sell_signal'] = True
+
+        # Exit conditions (for both long and short positions)
+        df['exit_signal'] = (
+            # Spread becomes too wide (liquidity drying up)
+                (df['spread_bps'] > self.max_spread_bps * 1.5) |
+
+                # Volume imbalance reverses significantly
+                (abs(df['volume_imbalance'].shift(1) - df['volume_imbalance']) > 0.3) |
+
+                # High order flow toxicity
+                (df['order_flow_toxicity'] > 0.8) |
+
+                # High volatility
+                (df['volatility_5min'] > 0.03)
+        )
+
+        return df
+
+    def execute_strategy(self, symbol, df):
+        """Execute the Level 2 scalping strategy for a symbol"""
+
+        if df is None or len(df) < 20:
+            return []
+
+        # Generate signals
+        df = self.generate_signals(df)
+
+        # Track positions and trades for this symbol
+        trades = []
+        position = None  # Current position info
+
+        for i, (timestamp, row) in enumerate(df.iterrows()):
+            current_time = timestamp.time()
+
+            # Skip if market is closing soon
+            if current_time >= self.square_off_time:
+                if position:
+                    # Force exit before market close
+                    trade = self.close_position(position, row, "square_off", timestamp)
+                    if trade:
+                        trades.append(trade)
+                    position = None
+                continue
+
+            # Entry logic
+            if position is None:
+                if row['buy_signal']:
+                    position = self.open_position(symbol, 'long', row, timestamp)
+                elif row['sell_signal']:
+                    position = self.open_position(symbol, 'short', row, timestamp)
+
+            # Exit logic
+            elif position is not None:
+                exit_reason = None
+
+                # Check for exit signals
+                if row['exit_signal']:
+                    exit_reason = "exit_signal"
+
+                # Check for trailing stop
+                elif self.check_trailing_stop(position, row):
+                    exit_reason = "trailing_stop"
+
+                # Check for profit target (quick scalp)
+                elif self.check_profit_target(position, row):
+                    exit_reason = "profit_target"
+
+                # Check for maximum holding time (5 minutes)
+                elif (timestamp - position['entry_time']).total_seconds() > 300:
+                    exit_reason = "max_time"
+
+                if exit_reason:
+                    trade = self.close_position(position, row, exit_reason, timestamp)
+                    if trade:
+                        trades.append(trade)
+                    position = None
+                else:
+                    # Update trailing stop
+                    self.update_trailing_stop(position, row)
+
+        return trades
+
+    def open_position(self, symbol, side, row, timestamp):
+        """Open a new position"""
+
+        # Calculate position size based on available capital
+        position_value = self.current_capital * self.position_size_pct
+        price = row['ask_price1'] if side == 'long' else row['bid_price1']
+        quantity = int(position_value / price)
+
+        if quantity <= 0:
             return None
 
-    def test_connection(self):
-        """Test the database connections and symbol loading"""
-        print("\nTesting Database Connections")
+        position = {
+            'symbol': symbol,
+            'side': side,
+            'entry_time': timestamp,
+            'entry_price': price,
+            'quantity': quantity,
+            'trailing_stop': None,
+            'highest_profit': 0,
+            'lowest_profit': 0
+        }
+
+        # Set initial trailing stop
+        if side == 'long':
+            position['trailing_stop'] = price * (1 - self.trailing_stop_pct)
+        else:
+            position['trailing_stop'] = price * (1 + self.trailing_stop_pct)
+
+        return position
+
+    def close_position(self, position, row, exit_reason, timestamp):
+        """Close an existing position"""
+
+        side = position['side']
+        exit_price = row['bid_price1'] if side == 'long' else row['ask_price1']
+
+        # Calculate P&L
+        if side == 'long':
+            pnl = (exit_price - position['entry_price']) * position['quantity']
+        else:
+            pnl = (position['entry_price'] - exit_price) * position['quantity']
+
+        pnl_pct = pnl / (position['entry_price'] * position['quantity'])
+
+        # Update capital
+        self.current_capital += pnl
+
+        # Create trade record
+        trade = Trade(
+            entry_time=position['entry_time'],
+            exit_time=timestamp,
+            symbol=position['symbol'],
+            side=side,
+            entry_price=position['entry_price'],
+            exit_price=exit_price,
+            quantity=position['quantity'],
+            pnl=pnl,
+            pnl_pct=pnl_pct,
+            exit_reason=exit_reason,
+            holding_period=timestamp - position['entry_time']
+        )
+
+        return trade
+
+    def check_trailing_stop(self, position, row):
+        """Check if trailing stop should trigger"""
+        current_price = row['bid_price1'] if position['side'] == 'long' else row['ask_price1']
+
+        if position['side'] == 'long':
+            return current_price <= position['trailing_stop']
+        else:
+            return current_price >= position['trailing_stop']
+
+    def update_trailing_stop(self, position, row):
+        """Update trailing stop based on current price"""
+        current_price = row['ltp']
+
+        if position['side'] == 'long':
+            new_stop = current_price * (1 - self.trailing_stop_pct)
+            position['trailing_stop'] = max(position['trailing_stop'], new_stop)
+        else:
+            new_stop = current_price * (1 + self.trailing_stop_pct)
+            position['trailing_stop'] = min(position['trailing_stop'], new_stop)
+
+    def check_profit_target(self, position, row):
+        """Check if quick profit target is hit (0.5% for scalping)"""
+        current_price = row['ltp']
+        entry_price = position['entry_price']
+
+        if position['side'] == 'long':
+            profit_pct = (current_price - entry_price) / entry_price
+            return profit_pct >= 0.005  # 0.5% profit target
+        else:
+            profit_pct = (entry_price - current_price) / entry_price
+            return profit_pct >= 0.005
+
+    def run_backtest(self, parallel=True):
+        """Run the complete backtest"""
+
+        print(f"\nRunning Level 2 Scalping Backtest")
+        print(f"Symbols: {len(self.symbols)}")
+        print(f"Initial Capital: ₹{self.initial_capital:,.0f}")
         print("=" * 50)
 
-        if not self.symbols:
-            print("No symbols available for testing")
-            return False
+        all_trades = []
 
-        # Test loading data for the first symbol
-        test_symbol = self.symbols[0]
-        print(f"Testing data loading for: {test_symbol}")
+        if parallel and len(self.symbols) > 1:
+            # Parallel processing
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                future_to_symbol = {}
 
-        test_data = self.load_data_from_all_databases(test_symbol)
+                for symbol in self.symbols:
+                    future = executor.submit(self._backtest_symbol, symbol)
+                    future_to_symbol[future] = symbol
 
-        if test_data is not None:
-            print(f"Successfully loaded {len(test_data)} records")
-            print(f"Date range: {test_data.index.min()} to {test_data.index.max()}")
-
-            if 'source_db' in test_data.columns:
-                source_counts = test_data['source_db'].value_counts()
-                print(f"Data sources:")
-                for source, count in source_counts.items():
-                    print(f"   {source}: {count} records")
-
-            return True
+                for future in concurrent.futures.as_completed(future_to_symbol):
+                    symbol = future_to_symbol[future]
+                    try:
+                        trades = future.result()
+                        all_trades.extend(trades)
+                        print(f"✓ {symbol}: {len(trades)} trades")
+                    except Exception as e:
+                        print(f"✗ {symbol}: Error - {e}")
         else:
-            print("Failed to load test data")
-            return False
+            # Sequential processing
+            for symbol in self.symbols:
+                try:
+                    trades = self._backtest_symbol(symbol)
+                    all_trades.extend(trades)
+                    print(f"✓ {symbol}: {len(trades)} trades")
+                except Exception as e:
+                    print(f"✗ {symbol}: Error - {e}")
+
+        self.trades = all_trades
+        return self.analyze_results()
+
+    def _backtest_symbol(self, symbol):
+        """Backtest a single symbol (helper method for parallel processing)"""
+        df = self.load_market_data(symbol)
+        if df is not None:
+            return self.execute_strategy(symbol, df)
+        return []
+
+    def analyze_results(self):
+        """Analyze backtest results"""
+
+        if not self.trades:
+            print("No trades executed!")
+            return {}
+
+        # Convert trades to DataFrame for analysis
+        trades_df = pd.DataFrame([
+            {
+                'entry_time': trade.entry_time,
+                'exit_time': trade.exit_time,
+                'symbol': trade.symbol,
+                'side': trade.side,
+                'entry_price': trade.entry_price,
+                'exit_price': trade.exit_price,
+                'quantity': trade.quantity,
+                'pnl': trade.pnl,
+                'pnl_pct': trade.pnl_pct,
+                'exit_reason': trade.exit_reason,
+                'holding_period_seconds': trade.holding_period.total_seconds()
+            }
+            for trade in self.trades
+        ])
+
+        # Calculate performance metrics
+        total_pnl = trades_df['pnl'].sum()
+        total_return_pct = (total_pnl / self.initial_capital) * 100
+
+        winning_trades = trades_df[trades_df['pnl'] > 0]
+        losing_trades = trades_df[trades_df['pnl'] < 0]
+
+        win_rate = len(winning_trades) / len(trades_df) * 100
+
+        avg_win = winning_trades['pnl'].mean() if len(winning_trades) > 0 else 0
+        avg_loss = losing_trades['pnl'].mean() if len(losing_trades) > 0 else 0
+
+        profit_factor = abs(winning_trades['pnl'].sum() / losing_trades['pnl'].sum()) if len(losing_trades) > 0 else float('inf')
+
+        max_drawdown = self.calculate_max_drawdown(trades_df)
+
+        # Print results
+        print(f"\n{'=' * 60}")
+        print(f"LEVEL 2 SCALPING BACKTEST RESULTS")
+        print(f"{'=' * 60}")
+        print(f"Initial Capital:     ₹{self.initial_capital:,.0f}")
+        print(f"Final Capital:       ₹{self.current_capital:,.0f}")
+        print(f"Total P&L:           ₹{total_pnl:,.0f}")
+        print(f"Total Return:        {total_return_pct:.2f}%")
+        print(f"")
+        print(f"Total Trades:        {len(trades_df)}")
+        print(f"Winning Trades:      {len(winning_trades)} ({win_rate:.1f}%)")
+        print(f"Losing Trades:       {len(losing_trades)} ({100 - win_rate:.1f}%)")
+        print(f"")
+        print(f"Average Win:         ₹{avg_win:.0f}")
+        print(f"Average Loss:        ₹{avg_loss:.0f}")
+        print(f"Profit Factor:       {profit_factor:.2f}")
+        print(f"Max Drawdown:        {max_drawdown:.2f}%")
+        print(f"")
+        print(f"Avg Holding Period:  {trades_df['holding_period_seconds'].mean() / 60:.1f} minutes")
+
+        # Exit reason analysis
+        print(f"\nEXIT REASON BREAKDOWN:")
+        exit_reasons = trades_df['exit_reason'].value_counts()
+        for reason, count in exit_reasons.items():
+            print(f"{reason:15}: {count:3d} trades ({count / len(trades_df) * 100:.1f}%)")
+
+        # Symbol performance
+        print(f"\nTOP PERFORMING SYMBOLS:")
+        symbol_pnl = trades_df.groupby('symbol')['pnl'].agg(['sum', 'count']).sort_values('sum', ascending=False)
+        for symbol, (pnl, count) in symbol_pnl.head(10).iterrows():
+            print(f"{symbol:20}: ₹{pnl:6.0f} ({count:2d} trades)")
+
+        results = {
+            'trades_df': trades_df,
+            'total_pnl': total_pnl,
+            'total_return_pct': total_return_pct,
+            'win_rate': win_rate,
+            'profit_factor': profit_factor,
+            'max_drawdown': max_drawdown,
+            'avg_holding_period_minutes': trades_df['holding_period_seconds'].mean() / 60
+        }
+
+        return results
+
+    def calculate_max_drawdown(self, trades_df):
+        """Calculate maximum drawdown"""
+        trades_df = trades_df.sort_values('exit_time')
+        trades_df['cumulative_pnl'] = trades_df['pnl'].cumsum()
+        trades_df['cumulative_capital'] = self.initial_capital + trades_df['cumulative_pnl']
+
+        peak = trades_df['cumulative_capital'].expanding().max()
+        drawdown = (trades_df['cumulative_capital'] - peak) / peak * 100
+
+        return abs(drawdown.min())
 
 
-# Enhanced market depth analysis functions
-def calculate_market_depth_indicators(df):
-    """Calculate advanced market depth indicators"""
-
-    # Price impact indicators
-    for level in range(1, 6):
-        df[f'bid_price_impact_{level}'] = (df['close'] - df[f'bid_price{level}']) / df['close'] * 100
-        df[f'ask_price_impact_{level}'] = (df[f'ask_price{level}'] - df['close']) / df['close'] * 100
-
-    # Volume weighted average prices for each side
-    bid_volumes = df[['bid_size1', 'bid_size2', 'bid_size3', 'bid_size4', 'bid_size5']]
-    bid_prices = df[['bid_price1', 'bid_price2', 'bid_price3', 'bid_price4', 'bid_price5']]
-
-    ask_volumes = df[['ask_size1', 'ask_size2', 'ask_size3', 'ask_size4', 'ask_size5']]
-    ask_prices = df[['ask_price1', 'ask_price2', 'ask_price3', 'ask_price4', 'ask_price5']]
-
-    # VWAP for bid side
-    df['bid_vwap'] = (bid_prices * bid_volumes).sum(axis=1) / bid_volumes.sum(axis=1)
-
-    # VWAP for ask side
-    df['ask_vwap'] = (ask_prices * ask_volumes).sum(axis=1) / ask_volumes.sum(axis=1)
-
-    # Market depth pressure (how much volume at each level compared to level 1)
-    df['bid_depth_pressure'] = df['total_bid_size'] / df['bid_size1']
-    df['ask_depth_pressure'] = df['total_ask_size'] / df['ask_size1']
-
-    # Order size per order (average order size at each level)
-    for level in range(1, 6):
-        df[f'avg_bid_order_size_{level}'] = np.where(
-            df[f'bid_order{level}'] > 0,
-            df[f'bid_size{level}'] / df[f'bid_order{level}'],
-            0
-        )
-        df[f'avg_ask_order_size_{level}'] = np.where(
-            df[f'ask_order{level}'] > 0,
-            df[f'ask_size{level}'] / df[f'ask_order{level}'],
-            0
-        )
-
-    # Market microstructure indicators
-    df['effective_spread'] = 2 * abs(df['close'] - df['weighted_mid_price'])
-    df['realized_spread'] = df['effective_spread'] - df['spread']
-
-    # Order book slope (price difference per unit volume)
-    df['bid_slope'] = np.where(
-        df['total_bid_size'] > 0,
-        (df['bid_price1'] - df['bid_price5']) / df['total_bid_size'],
-        0
-    )
-    df['ask_slope'] = np.where(
-        df['total_ask_size'] > 0,
-        (df['ask_price5'] - df['ask_price1']) / df['total_ask_size'],
-        0
-    )
-
-    return df
-
-
-def detect_market_depth_patterns(df):
-    """Detect specific market depth patterns for trading signals"""
-
-    # Large order detection (orders significantly larger than average)
-    df['large_bid_l1'] = df['bid_size1'] > df['bid_size1'].rolling(20).mean() * 2
-    df['large_ask_l1'] = df['ask_size1'] > df['ask_size1'].rolling(20).mean() * 2
-
-    # Iceberg order detection (consistent refilling at same price level)
-    df['potential_bid_iceberg'] = (
-            (df['bid_price1'] == df['bid_price1'].shift(1)) &
-            (df['bid_size1'] > df['bid_size1'].shift(1))
-    )
-    df['potential_ask_iceberg'] = (
-            (df['ask_price1'] == df['ask_price1'].shift(1)) &
-            (df['ask_size1'] > df['ask_size1'].shift(1))
-    )
-
-    # Spoofing detection (large orders that disappear quickly)
-    df['bid_spoofing_signal'] = (
-            (df['bid_size1'].shift(1) > df['bid_size1'].rolling(10).mean() * 3) &
-            (df['bid_size1'] < df['bid_size1'].shift(1) * 0.5)
-    )
-    df['ask_spoofing_signal'] = (
-            (df['ask_size1'].shift(1) > df['ask_size1'].rolling(10).mean() * 3) &
-            (df['ask_size1'] < df['ask_size1'].shift(1) * 0.5)
-    )
-
-    # Market depth imbalance signals
-    df['strong_bid_imbalance'] = (
-            (df['total_bid_size'] / (df['total_bid_size'] + df['total_ask_size']) > 0.7) &
-            (df['bid_size1'] > df['ask_size1'] * 2)
-    )
-    df['strong_ask_imbalance'] = (
-            (df['total_ask_size'] / (df['total_bid_size'] + df['total_ask_size']) > 0.7) &
-            (df['ask_size1'] > df['bid_size1'] * 2)
-    )
-
-    return df
-
-
-# Example usage for enhanced order flow strategy with market depth
-def enhanced_order_flow_strategy_with_market_depth(df):
-    """Enhanced order flow strategy using market depth data"""
-
-    # Calculate market depth indicators
-    df = calculate_market_depth_indicators(df)
-    df = detect_market_depth_patterns(df)
-
-    # Enhanced buy signals using market depth
-    df['enhanced_buy_signal'] = (
-        # Strong bid imbalance
-            (df['strong_bid_imbalance']) &
-
-            # Large bid orders at level 1
-            (df['large_bid_l1']) &
-
-            # Bid side pressure (more volume deeper in book)
-            (df['bid_depth_pressure'] > 1.5) &
-
-            # Price near weighted mid (not chasing)
-            (abs(df['close'] - df['weighted_mid_price']) / df['close'] < 0.001) &
-
-            # Tight spread (good liquidity)
-            (df['spread_pct'] < 0.1)
-    )
-
-    # Enhanced sell signals using market depth
-    df['enhanced_sell_signal'] = (
-        # Strong ask imbalance
-            (df['strong_ask_imbalance']) &
-
-            # Large ask orders at level 1
-            (df['large_ask_l1']) &
-
-            # Ask side pressure (more volume deeper in book)
-            (df['ask_depth_pressure'] > 1.5) &
-
-            # Price near weighted mid (not chasing)
-            (abs(df['close'] - df['weighted_mid_price']) / df['close'] < 0.001) &
-
-            # Tight spread (good liquidity)
-            (df['spread_pct'] < 0.1)
-    )
-
-    return df
-
-
-# Test function to verify market depth parsing
-def test_market_depth_parsing():
-    """Test the market depth parsing functionality"""
-
-    # Sample market depth data
-    sample_raw_data = {
-        "bid_price1": 94.8, "bid_price2": 94.75, "bid_price3": 94.7, "bid_price4": 94.65, "bid_price5": 94.6,
-        "ask_price1": 95.05, "ask_price2": 95.1, "ask_price3": 95.15, "ask_price4": 95.2, "ask_price5": 95.25,
-        "bid_size1": 975, "bid_size2": 2400, "bid_size3": 1950, "bid_size4": 750, "bid_size5": 1875,
-        "ask_size1": 2850, "ask_size2": 2775, "ask_size3": 2550, "ask_size4": 1350, "ask_size5": 600,
-        "bid_order1": 6, "bid_order2": 13, "bid_order3": 8, "bid_order4": 3, "bid_order5": 8,
-        "ask_order1": 11, "ask_order2": 14, "ask_order3": 9, "ask_order4": 6, "ask_order5": 3,
-        "type": "dp", "symbol": "NSE:NIFTY25SEP25100CE", "processing_timestamp": "2025-09-25T09:36:00.379007"
-    }
-
-    print("Testing Market Depth Parsing")
+# Usage Example
+if __name__ == "__main__":
+    print("LEVEL 2 SCALPING BACKTESTER")
     print("=" * 50)
 
-    # Test parsing
-    raw_data_str = json.dumps(sample_raw_data)
-
-    # This would normally be done inside the load_data_from_single_db function
-    # Here we're just testing the parsing logic
     try:
-        raw_data = json.loads(raw_data_str)
+        # Initialize backtester
+        backtester = CompleteLevel2ScalpingBacktester(
+            data_folder="data/marketupdate",
+            symbols=None,  # Auto-detect
+            initial_capital=100000,
+            position_size_pct=10,
+            min_spread_bps=5,
+            max_spread_bps=50,
+            min_volume_imbalance=0.3,
+            trailing_stop_pct=2.0,
+            square_off_time="15:20"
+        )
 
-        print(f"Data type: {raw_data.get('type')}")
-        print(f"Symbol: {raw_data.get('symbol')}")
-        print(f"Best bid: {raw_data.get('bid_price1')} (size: {raw_data.get('bid_size1')})")
-        print(f"Best ask: {raw_data.get('ask_price1')} (size: {raw_data.get('ask_size1')})")
+        # Run backtest
+        results = backtester.run_backtest(parallel=True)
 
-        # Calculate some metrics
-        spread = raw_data.get('ask_price1') - raw_data.get('bid_price1')
-        total_bid_size = sum([raw_data.get(f'bid_size{i}', 0) for i in range(1, 6)])
-        total_ask_size = sum([raw_data.get(f'ask_size{i}', 0) for i in range(1, 6)])
-
-        print(f"Spread: {spread:.2f}")
-        print(f"Total bid size: {total_bid_size}")
-        print(f"Total ask size: {total_ask_size}")
-        print(f"Order book imbalance: {(total_bid_size - total_ask_size) / (total_bid_size + total_ask_size):.3f}")
-
-        return True
+        print(f"\nBacktest completed successfully!")
 
     except Exception as e:
         print(f"Error: {e}")
-        return False
-
-# USAGE EXAMPLE:
-if __name__ == "__main__":
-    print("TESTING FIXED MULTI-DATABASE BACKTESTER")
-    print("=" * 70)
-
-    test_market_depth_parsing()
-
-    try:
-        # Initialize the fixed backtester
-        backtester = FixedMultiDatabaseBacktester(
-            data_folder="data/marketdepth",  # This will auto-search multiple folders
-            symbols=None,  # Auto-detect symbols
-            period=14,
-            volume_threshold_percentile=60,
-            trailing_stop_pct=3.0,
-            initial_capital=100000,
-            square_off_time="15:20",
-            min_data_points=100
-        )
-
-        # Test the connection
-        if backtester.test_connection():
-            print("\nSUCCESS! Database connections are working")
-            print(f"Ready to backtest {len(backtester.symbols)} symbols")
-            print(f"Using {len(backtester.db_files)} database files")
-
-            # You can now proceed with your backtesting
-            # results = backtester.run_backtest_sequential()
-
-        else:
-            print("\nConnection test failed")
-
-    except FileNotFoundError as e:
-        print(f"\nDatabase Error: {e}")
-        print("\n💡 Solutions:")
-        print("1. Run the database test script to diagnose the issue")
-        print("2. Check if your database files are in the correct location")
-        print("3. Verify database file format and content")
-
-    except Exception as e:
-        print(f"\nUnexpected Error: {e}")
         import traceback
 
         traceback.print_exc()
-
-
-# QUICK PATCH FUNCTION FOR EXISTING CODE:
-def apply_quick_fix_to_existing_backtester(backtester_instance):
-    """Apply the quick fix to an existing backtester instance"""
-    import types
-
-    print("🔧 Applying quick fix to existing backtester...")
-
-    # Replace the find_database_files method
-    backtester_instance.enhanced_find_database_files = types.MethodType(enhanced_find_database_files, backtester_instance)
-
-    # Re-run database file discovery
-    backtester_instance.db_files = backtester_instance.enhanced_find_database_files()
-
-    if backtester_instance.db_files:
-        print(f"Quick fix successful! Found {len(backtester_instance.db_files)} database files")
-        print(f"Using folder: {backtester_instance.data_folder}")
-        return True
-    else:
-        print("Quick fix failed - no database files found")
-        return False
-
-
-"""
-HOW TO USE THIS FIX:
-
-1. REPLACE YOUR EXISTING CLASS:
-   Simply replace your existing MultiDatabaseDIBacktester class with FixedMultiDatabaseBacktester
-
-2. OR PATCH EXISTING INSTANCE:
-   If you have an existing backtester that's failing:
-
-   # Your existing code that might be failing
-   backtester = MultiDatabaseDIBacktester(data_folder="data/marketupdate", ...)
-
-   # Apply the quick fix
-   if apply_quick_fix_to_existing_backtester(backtester):
-       # Now it should work
-       results = backtester.run_backtest_sequential()
-
-3. UPDATE FOLDER PATH:
-   The enhanced version will automatically search multiple common folder paths:
-   - data/marketupdate
-   - data/symbolupdate  
-   - data/
-   - And several others...
-
-4. RUN TEST FIRST:
-   Before running your full backtest, use the test_connection() method to verify everything works.
-"""
