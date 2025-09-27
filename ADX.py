@@ -873,7 +873,7 @@ class MultiDatabaseDIBacktester:
 if __name__ == "__main__":
     # Initialize multi-database backtester with AUTO-DETECTION of symbols
     backtester = MultiDatabaseDIBacktester(
-        data_folder="data",  # Folder containing database files
+        data_folder="data/symbolupdate",  # Folder containing database files
         symbols=None,  # Auto-detect symbols from databases (set to None)
         period=14,  # DI calculation period
         volume_threshold_percentile=60,  # Volume filter (60th percentile)

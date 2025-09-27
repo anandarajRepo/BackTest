@@ -1187,7 +1187,7 @@ class OrderFlowBacktester:
 if __name__ == "__main__":
     # Initialize Order Flow Backtester
     backtester = OrderFlowBacktester(
-        data_folder="data",  # Folder containing database files
+        data_folder="data/symbolupdate",  # Folder containing database files
         symbols=None,  # Auto-detect symbols from databases
         volume_lookback=20,  # Volume moving average period
         volume_imbalance_threshold=0.65,  # 65% threshold for buy/sell imbalance

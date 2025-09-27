@@ -931,7 +931,7 @@ class First15SecondsVolumeBreakoutBacktester:
 if __name__ == "__main__":
     # Initialize First 15 Seconds Volume Breakout Backtester
     backtester = First15SecondsVolumeBreakoutBacktester(
-        data_folder="data",  # Folder containing database files
+        data_folder="data/symbolupdate",  # Folder containing database files
         symbols=None,  # Auto-detect symbols from databases
         volume_lookback=30,  # Look at last 30 1-minute candles for volume average
         trailing_stop_pct=2.0,  # 2% trailing stop loss

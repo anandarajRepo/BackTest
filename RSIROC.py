@@ -1026,7 +1026,7 @@ class RSIROCScalpingBacktester:
 if __name__ == "__main__":
     # Initialize RSI & ROC Scalping Backtester
     backtester = RSIROCScalpingBacktester(
-        data_folder="data",  # Folder containing database files
+        data_folder="data/symbolupdate",  # Folder containing database files
         symbols=None,  # Auto-detect symbols from databases
         rsi_period=14,  # RSI calculation period
         roc_period=10,  # ROC calculation period
