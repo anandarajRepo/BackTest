@@ -1189,7 +1189,7 @@ if __name__ == "__main__":
     backtester = OrderFlowBacktester(
         data_folder="data/symbolupdate",  # Folder containing database files
         symbols=None,  # Auto-detect symbols from databases
-        volume_lookback=20,  # Volume moving average period
+        volume_lookback=200,  # Volume moving average period
         volume_imbalance_threshold=0.65,  # 65% threshold for buy/sell imbalance
         order_size_percentile=75,  # 75th percentile for large order detection
         momentum_period=5,  # Price momentum calculation period
