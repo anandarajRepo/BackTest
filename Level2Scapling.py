@@ -312,74 +312,77 @@ class CompleteLevel2ScalpingBacktester:
         return df
 
     def generate_signals(self, df):
-        """Generate Level 2 scalping signals"""
+        """Generate Level 2 scalping signals with more realistic conditions"""
 
         # Initialize signal columns
         df['buy_signal'] = False
         df['sell_signal'] = False
         df['exit_signal'] = False
 
-        # Buy conditions (expect price to go up)
-        buy_conditions = (
-            # Spread is reasonable (not too wide, indicating good liquidity)
-                (df['spread_bps'] >= self.min_spread_bps) &
-                (df['spread_bps'] <= self.max_spread_bps) &
+        # Calculate signal strength scores instead of strict conditions
+        df['buy_score'] = 0
+        df['sell_score'] = 0
 
-                # Strong buying pressure in order book
-                (df['volume_imbalance'] > self.min_volume_imbalance) &
-                (df['level1_imbalance'] > 0.2) &
+        # Scoring system - accumulate points for each favorable condition
 
-                # Price is near or below mid (good entry)
-                (df['price_pressure'] <= 0.001) &
+        # 1. Spread conditions (weight: 1 point)
+        spread_ok = (df['spread_bps'] >= self.min_spread_bps) & (df['spread_bps'] <= self.max_spread_bps)
+        df.loc[spread_ok, 'buy_score'] += 1
+        df.loc[spread_ok, 'sell_score'] += 1
 
-                # Recent momentum is not too extreme
-                (abs(df['price_momentum_5']) < 0.01) &
+        # 2. Volume imbalance (weight: 2 points - most important)
+        strong_bid_imbalance = df['volume_imbalance'] > self.min_volume_imbalance * 0.5  # Relaxed threshold
+        strong_ask_imbalance = df['volume_imbalance'] < -self.min_volume_imbalance * 0.5
 
-                # Volatility is manageable
-                (df['volatility_5min'] < 0.02) &
+        df.loc[strong_bid_imbalance, 'buy_score'] += 2
+        df.loc[strong_ask_imbalance, 'sell_score'] += 2
 
-                # Order flow is not too toxic
-                (df['order_flow_toxicity'] < 0.5)
-        )
+        # 3. Level 1 imbalance (weight: 1 point)
+        level1_bid = df['level1_imbalance'] > 0.1  # Relaxed from 0.2
+        level1_ask = df['level1_imbalance'] < -0.1
 
-        # Sell conditions (expect price to go down)
-        sell_conditions = (
-            # Spread is reasonable
-                (df['spread_bps'] >= self.min_spread_bps) &
-                (df['spread_bps'] <= self.max_spread_bps) &
+        df.loc[level1_bid, 'buy_score'] += 1
+        df.loc[level1_ask, 'sell_score'] += 1
 
-                # Strong selling pressure
-                (df['volume_imbalance'] < -self.min_volume_imbalance) &
-                (df['level1_imbalance'] < -0.2) &
+        # 4. Price pressure (weight: 1 point)
+        favorable_buy_pressure = df['price_pressure'] <= 0.002  # Relaxed from 0.001
+        favorable_sell_pressure = df['price_pressure'] >= -0.002
 
-                # Price is near or above mid
-                (df['price_pressure'] >= -0.001) &
+        df.loc[favorable_buy_pressure, 'buy_score'] += 1
+        df.loc[favorable_sell_pressure, 'sell_score'] += 1
 
-                # Momentum conditions
-                (abs(df['price_momentum_5']) < 0.01) &
-                (df['volatility_5min'] < 0.02) &
-                (df['order_flow_toxicity'] < 0.5)
-        )
+        # 5. Momentum not too extreme (weight: 1 point)
+        momentum_ok = abs(df['price_momentum_5']) < 0.015  # Relaxed from 0.01
+        df.loc[momentum_ok, 'buy_score'] += 1
+        df.loc[momentum_ok, 'sell_score'] += 1
 
-        df.loc[buy_conditions, 'buy_signal'] = True
-        df.loc[sell_conditions, 'sell_signal'] = True
+        # 6. Volatility manageable (weight: 1 point)
+        volatility_ok = df['volatility_5min'] < 0.03  # Relaxed from 0.02
+        df.loc[volatility_ok, 'buy_score'] += 1
+        df.loc[volatility_ok, 'sell_score'] += 1
 
-        # Exit conditions (for both long and short positions)
+        # 7. Order flow not too toxic (weight: 1 point)
+        toxicity_ok = df['order_flow_toxicity'] < 0.6  # Relaxed from 0.5
+        df.loc[toxicity_ok, 'buy_score'] += 1
+        df.loc[toxicity_ok, 'sell_score'] += 1
+
+        # Generate signals based on score threshold
+        # Instead of requiring ALL conditions (score=9), require at least 5-6 points
+        SIGNAL_THRESHOLD = 5  # Adjust this based on your testing
+
+        df['buy_signal'] = df['buy_score'] >= SIGNAL_THRESHOLD
+        df['sell_signal'] = df['sell_score'] >= SIGNAL_THRESHOLD
+
+        # Exit conditions remain similar but slightly relaxed
         df['exit_signal'] = (
-            # Spread becomes too wide (liquidity drying up)
-                (df['spread_bps'] > self.max_spread_bps * 1.5) |
-
-                # Volume imbalance reverses significantly
-                (abs(df['volume_imbalance'].shift(1) - df['volume_imbalance']) > 0.3) |
-
-                # High order flow toxicity
-                (df['order_flow_toxicity'] > 0.8) |
-
-                # High volatility
-                (df['volatility_5min'] > 0.03)
+            (df['spread_bps'] > self.max_spread_bps * 1.3) |  # Relaxed from 1.5
+            (abs(df['volume_imbalance'].shift(1) - df['volume_imbalance']) > 0.4) |  # Relaxed from 0.3
+            (df['order_flow_toxicity'] > 0.7) |  # Relaxed from 0.8
+            (df['volatility_5min'] > 0.04)  # Relaxed from 0.03
         )
 
         return df
+
 
     def execute_strategy(self, symbol, df):
         """Execute the Level 2 scalping strategy for a symbol"""

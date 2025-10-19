@@ -16,7 +16,7 @@ class OrderFlowBacktester:
     def __init__(self, data_folder="data", symbols=None, volume_lookback=20,
                  volume_imbalance_threshold=0.65, order_size_percentile=75,
                  momentum_period=5, trailing_stop_pct=0.4, initial_capital=100000,
-                 square_off_time="15:20", min_data_points=100):
+                 square_off_time="15:20", min_data_points=100, debug_mode=False):
         """
         Initialize the Order Flow Trading Strategy Backtester
 
@@ -31,6 +31,7 @@ class OrderFlowBacktester:
         - initial_capital: Starting capital for backtesting (per symbol)
         - square_off_time: Time to square off all positions in HH:MM format (default "15:20")
         - min_data_points: Minimum data points required for a symbol to be included
+        - debug_mode: Enable detailed diagnostic output (default False)
         """
         self.data_folder = data_folder
         self.db_files = self.find_database_files()
@@ -42,6 +43,7 @@ class OrderFlowBacktester:
         self.initial_capital = initial_capital
         self.square_off_time = self.parse_square_off_time(square_off_time)
         self.min_data_points = min_data_points
+        self.debug_mode = debug_mode
         self.results = {}
         self.combined_data = {}
 
@@ -57,6 +59,7 @@ class OrderFlowBacktester:
         print(f"  Trailing Stop: {trailing_stop_pct}%")
         print(f"  Square-off time: {square_off_time} IST")
         print(f"  Minimum data points: {self.min_data_points}")
+        print(f"  Debug mode: {debug_mode}")
 
         print(f"\nFound {len(self.db_files)} database files:")
         for db_file in self.db_files:
@@ -187,7 +190,8 @@ class OrderFlowBacktester:
 
         for db_file in self.db_files:
             try:
-                print(f"  Loading {symbol} from {os.path.basename(db_file)}")
+                if self.debug_mode:
+                    print(f"  Loading {symbol} from {os.path.basename(db_file)}")
                 df = self.load_data_from_single_db(db_file, symbol)
 
                 if df is not None and not df.empty:
@@ -277,8 +281,8 @@ class OrderFlowBacktester:
             df['volume_final'] = df['volume_raw'].fillna(df['volume']).fillna(0)
 
             # Handle order book data
-            df['bid_price'] = df['bid_price'].fillna(df['close'] * 0.999)  # Approximate if missing
-            df['ask_price'] = df['ask_price'].fillna(df['close'] * 1.001)  # Approximate if missing
+            df['bid_price'] = df['bid_price'].fillna(df['close'] * 0.999)
+            df['ask_price'] = df['ask_price'].fillna(df['close'] * 1.001)
             df['bid_size'] = df['bid_size'].fillna(0)
             df['ask_size'] = df['ask_size'].fillna(0)
             df['total_buy_qty'] = df['total_buy_qty'].fillna(0)
@@ -295,8 +299,32 @@ class OrderFlowBacktester:
                        'bid_size', 'ask_size', 'total_buy_qty', 'total_sell_qty']].copy()
 
         except Exception as e:
-            print(f"    Error accessing database {db_path}: {e}")
+            if self.debug_mode:
+                print(f"    Error accessing database {db_path}: {e}")
             return None
+
+    def validate_order_flow_data(self, df):
+        """Validate that order flow data exists and is usable"""
+        issues = []
+
+        # Check for order book data
+        bid_ask_available = ((df['bid_size'] > 0) | (df['ask_size'] > 0)).sum()
+        bid_ask_coverage = bid_ask_available / len(df) if len(df) > 0 else 0
+
+        # Check for buy/sell volume data
+        buy_sell_available = ((df['total_buy_qty'] > 0) | (df['total_sell_qty'] > 0)).sum()
+        buy_sell_coverage = buy_sell_available / len(df) if len(df) > 0 else 0
+
+        if self.debug_mode:
+            print(f"  Order book data coverage: {bid_ask_coverage * 100:.1f}% ({bid_ask_available}/{len(df)} rows)")
+            print(f"  Buy/sell volume coverage: {buy_sell_coverage * 100:.1f}% ({buy_sell_available}/{len(df)} rows)")
+
+        if bid_ask_coverage < 0.01:
+            issues.append("No meaningful bid/ask size data (< 1% coverage)")
+        if buy_sell_coverage < 0.01:
+            issues.append("No meaningful buy/sell quantity data (< 1% coverage)")
+
+        return issues, bid_ask_coverage, buy_sell_coverage
 
     def calculate_order_flow_indicators(self, df):
         """Calculate order flow and volume analysis indicators"""
@@ -345,44 +373,80 @@ class OrderFlowBacktester:
 
         return df
 
-    def generate_signals(self, df):
-        """Generate buy/sell signals based on order flow analysis"""
+    def generate_signals(self, df, has_order_book, has_buy_sell):
+        """Generate buy/sell signals with adaptive logic based on data availability"""
 
-        # Strong buy signal conditions:
-        # 1. Buy volume imbalance > threshold
-        # 2. Large volume activity
-        # 3. Positive price momentum
-        # 4. VPT above its moving average
-        df['buy_signal'] = (
-                (df['buy_sell_imbalance'] > self.volume_imbalance_threshold) &
+        if self.debug_mode:
+            print(f"  Generating signals - Order book: {has_order_book}, Buy/Sell data: {has_buy_sell}")
+
+        # Core conditions that always apply
+        core_buy_conditions = (
                 (df['large_volume'] == True) &
                 (df['momentum'] > 0) &
-                (df['vpt'] > df['vpt_ma']) &
-                (df['volume_ratio'] > 1.2) &  # Above average volume
-                (~df['buy_sell_imbalance'].isna()) &
+                (df['volume_ratio'] > 1.1) &  # Relaxed from 1.2
                 (~df['momentum'].isna()) &
-                (~df['vpt'].isna())
+                (~df['volume_ratio'].isna())
         )
 
-        # Strong sell signal conditions:
-        # 1. Sell volume imbalance (buy_sell_imbalance < 1 - threshold)
-        # 2. Large volume activity
-        # 3. Negative price momentum
-        # 4. VPT below its moving average
-        df['sell_signal'] = (
-                (df['buy_sell_imbalance'] < (1 - self.volume_imbalance_threshold)) &
+        core_sell_conditions = (
                 (df['large_volume'] == True) &
                 (df['momentum'] < 0) &
-                (df['vpt'] < df['vpt_ma']) &
-                (df['volume_ratio'] > 1.2) &  # Above average volume
-                (~df['buy_sell_imbalance'].isna()) &
+                (df['volume_ratio'] > 1.1) &
                 (~df['momentum'].isna()) &
-                (~df['vpt'].isna())
+                (~df['volume_ratio'].isna())
         )
 
-        # Additional confirmation: bid-ask imbalance alignment
-        df['buy_signal'] = df['buy_signal'] & (df['bid_ask_imbalance'] > 0.1)  # More bids than asks
-        df['sell_signal'] = df['sell_signal'] & (df['bid_ask_imbalance'] < -0.1)  # More asks than bids
+        # Add order flow conditions if available
+        if has_buy_sell:
+            # Use buy/sell imbalance - relaxed threshold to 0.60 from 0.65
+            buy_flow_condition = (
+                    (df['buy_sell_imbalance'] > 0.60) &
+                    (~df['buy_sell_imbalance'].isna())
+            )
+            sell_flow_condition = (
+                    (df['buy_sell_imbalance'] < 0.40) &
+                    (~df['buy_sell_imbalance'].isna())
+            )
+
+            df['buy_signal'] = core_buy_conditions & buy_flow_condition
+            df['sell_signal'] = core_sell_conditions & sell_flow_condition
+
+            if self.debug_mode:
+                print(f"    Using buy/sell imbalance (threshold: 0.60/0.40)")
+        else:
+            # Fallback: use VPT when no order flow data
+            vpt_buy_condition = (
+                    (df['vpt'] > df['vpt_ma']) &
+                    (~df['vpt'].isna()) &
+                    (~df['vpt_ma'].isna())
+            )
+            vpt_sell_condition = (
+                    (df['vpt'] < df['vpt_ma']) &
+                    (~df['vpt'].isna()) &
+                    (~df['vpt_ma'].isna())
+            )
+
+            df['buy_signal'] = core_buy_conditions & vpt_buy_condition
+            df['sell_signal'] = core_sell_conditions & vpt_sell_condition
+
+            if self.debug_mode:
+                print(f"    Using VPT fallback (no buy/sell data)")
+
+        # Only add bid-ask filter if we have meaningful order book data (>10% coverage)
+        if has_order_book > 0.10:
+            df['buy_signal'] = df['buy_signal'] & (df['bid_ask_imbalance'] > 0.05)  # Relaxed from 0.1
+            df['sell_signal'] = df['sell_signal'] & (df['bid_ask_imbalance'] < -0.05)  # Relaxed from -0.1
+            if self.debug_mode:
+                print(f"    Applied bid-ask imbalance filter (±0.05)")
+        else:
+            if self.debug_mode:
+                print(f"    Skipped bid-ask filter (insufficient data)")
+
+        buy_count = df['buy_signal'].sum()
+        sell_count = df['sell_signal'].sum()
+
+        if self.debug_mode:
+            print(f"  Generated {buy_count} buy signals and {sell_count} sell signals")
 
         return df
 
@@ -401,7 +465,9 @@ class OrderFlowBacktester:
 
     def backtest_single_symbol(self, symbol):
         """Backtest order flow strategy for a single symbol"""
-        print(f"\nStarting order flow backtest for {symbol}")
+        print(f"\n{'=' * 80}")
+        print(f"Backtesting {symbol}")
+        print(f"{'=' * 80}")
 
         # Load data
         df = self.load_data_from_all_databases(symbol)
@@ -410,12 +476,35 @@ class OrderFlowBacktester:
             print(f"Insufficient data for {symbol}. Skipping.")
             return None
 
+        # Validate data quality
+        issues, bid_ask_cov, buy_sell_cov = self.validate_order_flow_data(df)
+
+        if issues:
+            print(f"⚠️  Data Quality Issues:")
+            for issue in issues:
+                print(f"  - {issue}")
+
         # Store combined data
         self.combined_data[symbol] = df.copy()
 
         # Calculate indicators
         df = self.calculate_order_flow_indicators(df)
-        df = self.generate_signals(df)
+
+        # Debug: Print indicator statistics
+        if self.debug_mode:
+            print(f"\nIndicator Statistics:")
+            print(f"  Valid rows (no NaN in key indicators): {(~df['momentum'].isna() & ~df['volume_ratio'].isna()).sum()} / {len(df)}")
+            print(f"  large_volume == True: {(df['large_volume'] == True).sum()}")
+            print(f"  momentum > 0: {(df['momentum'] > 0).sum()}")
+            print(f"  momentum < 0: {(df['momentum'] < 0).sum()}")
+            print(f"  volume_ratio > 1.1: {(df['volume_ratio'] > 1.1).sum()}")
+            print(f"  buy_sell_imbalance > 0.60: {(df['buy_sell_imbalance'] > 0.60).sum()}")
+            print(f"  buy_sell_imbalance < 0.40: {(df['buy_sell_imbalance'] < 0.40).sum()}")
+            print(f"  buy_sell_imbalance range: [{df['buy_sell_imbalance'].min():.3f}, {df['buy_sell_imbalance'].max():.3f}]")
+            print(f"  bid_ask_imbalance range: [{df['bid_ask_imbalance'].min():.3f}, {df['bid_ask_imbalance'].max():.3f}]")
+
+        # Generate signals with adaptive logic
+        df = self.generate_signals(df, bid_ask_cov, buy_sell_cov)
 
         # Add trading day and square-off time information
         df['trading_day'] = df.index.date
@@ -423,7 +512,7 @@ class OrderFlowBacktester:
 
         # Initialize trading variables
         cash = self.initial_capital
-        position = 0  # 0: no position, 1: long position, -1: short position
+        position = 0
         entry_price = 0
         trailing_stop_price = 0
         portfolio_value = []
@@ -438,14 +527,14 @@ class OrderFlowBacktester:
 
             # Force square-off at 3:20 PM IST
             if position != 0 and is_square_off:
-                if position == 1:  # Long position
+                if position == 1:
                     shares = trades[-1]['shares']
                     proceeds = shares * current_price
                     cash += proceeds
-                elif position == -1:  # Short position
+                elif position == -1:
                     shares = trades[-1]['shares']
                     cost = shares * current_price
-                    cash -= cost  # Cost to cover short
+                    cash -= cost
 
                 position = 0
 
@@ -470,7 +559,7 @@ class OrderFlowBacktester:
 
                 entry_day = None
 
-            # Check for buy signal (only if not in position and not at/after square-off time)
+            # Check for buy signal
             elif df.iloc[i]['buy_signal'] and position == 0 and not is_square_off:
                 shares = int(cash / current_price)
                 if shares > 0:
@@ -498,7 +587,7 @@ class OrderFlowBacktester:
                         'entry_price': round(current_price, 2)
                     })
 
-            # Check for sell signal (for short selling - only if not in position and not at/after square-off time)
+            # Check for sell signal
             elif df.iloc[i]['sell_signal'] and position == 0 and not is_square_off:
                 shares = int(cash / current_price)
                 if shares > 0:
@@ -506,7 +595,7 @@ class OrderFlowBacktester:
                     entry_price = current_price
                     entry_day = current_day
                     trailing_stop_price = entry_price * (1 + self.trailing_stop_pct)
-                    proceeds = shares * current_price  # Proceeds from short sale
+                    proceeds = shares * current_price
                     cash += proceeds
 
                     trades.append({
@@ -526,18 +615,16 @@ class OrderFlowBacktester:
                         'entry_price': round(current_price, 2)
                     })
 
-            # Check for exit conditions (only if in position, same day, and before square-off)
+            # Check for exit conditions
             elif position != 0 and entry_day == current_day and not is_square_off:
                 should_exit = False
                 exit_reason = ''
 
-                if position == 1:  # Long position
-                    # Update trailing stop
+                if position == 1:
                     if current_price > entry_price:
                         new_trailing_stop = current_price * (1 - self.trailing_stop_pct)
                         trailing_stop_price = max(trailing_stop_price, new_trailing_stop)
 
-                    # Check exit conditions
                     if current_price <= trailing_stop_price:
                         should_exit = True
                         exit_reason = 'TRAILING_STOP'
@@ -545,13 +632,11 @@ class OrderFlowBacktester:
                         should_exit = True
                         exit_reason = 'SELL_SIGNAL'
 
-                elif position == -1:  # Short position
-                    # Update trailing stop for short
+                elif position == -1:
                     if current_price < entry_price:
                         new_trailing_stop = current_price * (1 + self.trailing_stop_pct)
                         trailing_stop_price = min(trailing_stop_price, new_trailing_stop)
 
-                    # Check exit conditions
                     if current_price >= trailing_stop_price:
                         should_exit = True
                         exit_reason = 'TRAILING_STOP'
@@ -562,11 +647,11 @@ class OrderFlowBacktester:
                 if should_exit:
                     shares = trades[-1]['shares']
 
-                    if position == 1:  # Close long position
+                    if position == 1:
                         proceeds = shares * current_price
                         cash += proceeds
                         action = 'SELL'
-                    else:  # Cover short position
+                    else:
                         cost = shares * current_price
                         cash -= cost
                         action = 'COVER'
@@ -598,10 +683,10 @@ class OrderFlowBacktester:
                     entry_day = None
 
             # Calculate portfolio value
-            if position == 1:  # Long position
+            if position == 1:
                 shares = trades[-1]['shares']
                 portfolio_val = cash + (shares * current_price)
-            elif position == -1:  # Short position
+            elif position == -1:
                 shares = trades[-1]['shares']
                 portfolio_val = cash - (shares * (current_price - trades[-1]['entry_price']))
             else:
@@ -624,6 +709,11 @@ class OrderFlowBacktester:
         # Add order flow specific metrics
         order_flow_metrics = self.calculate_order_flow_metrics(trades)
         metrics.update(order_flow_metrics)
+
+        # Print trade summary
+        print(f"✓ Completed: {len(trades)} total actions ({metrics['total_trades']} complete trades)")
+        if metrics['total_trades'] > 0:
+            print(f"  Return: {metrics['total_return'] * 100:.2f}% | Win Rate: {metrics['win_rate'] * 100:.1f}%")
 
         return {
             'symbol': symbol,
@@ -698,10 +788,9 @@ class OrderFlowBacktester:
             if 'trade_return_pct' in sell_trade:
                 trade_return = sell_trade['trade_return_pct'] / 100
             else:
-                # Calculate return based on trade type
                 if buy_trade['action'] == 'BUY':
                     trade_return = (sell_trade['price'] - buy_trade['price']) / buy_trade['price']
-                else:  # SHORT
+                else:
                     trade_return = (buy_trade['price'] - sell_trade['price']) / buy_trade['price']
 
             order_flow_returns.append(trade_return)
@@ -740,7 +829,7 @@ class OrderFlowBacktester:
 
     def get_data_summary(self, df):
         """Get summary statistics for the data"""
-        unique_days = len(df['trading_day'].unique()) if 'trading_day' in df.columns else len(df.index.date)
+        unique_days = len(df['trading_day'].unique()) if 'trading_day' in df.columns else len(set(df.index.date))
 
         return {
             'total_records': len(df),
@@ -772,7 +861,7 @@ class OrderFlowBacktester:
             else:
                 if buy_trade['action'] == 'BUY':
                     trade_return = (sell_trade['price'] - buy_trade['price']) / buy_trade['price']
-                else:  # SHORT
+                else:
                     trade_return = (buy_trade['price'] - sell_trade['price']) / buy_trade['price']
 
             trade_returns.append(trade_return)
@@ -811,8 +900,9 @@ class OrderFlowBacktester:
 
     def run_backtest_sequential(self):
         """Run backtest for all symbols sequentially"""
-        print(f"\nStarting order flow backtest for {len(self.symbols)} symbols")
-        print(f"Strategy: Buy/Sell Volume Imbalance > {self.volume_imbalance_threshold * 100}% + Large Volume + Price Momentum")
+        print(f"\n{'=' * 80}")
+        print(f"Starting order flow backtest for {len(self.symbols)} symbols")
+        print(f"{'=' * 80}")
 
         for symbol in self.symbols:
             try:
@@ -925,7 +1015,7 @@ class OrderFlowBacktester:
                 else:
                     if buy_trade['action'] == 'BUY':
                         trade_return = (sell_trade['price'] - buy_trade['price']) / buy_trade['price'] * 100
-                    else:  # SHORT
+                    else:
                         trade_return = (buy_trade['price'] - sell_trade['price']) / buy_trade['price'] * 100
                     trade_pnl = buy_trade['shares'] * (sell_trade['price'] - buy_trade['price'])
                     if buy_trade['action'] == 'SHORT':
@@ -1034,7 +1124,6 @@ class OrderFlowBacktester:
         print("DATABASE ANALYSIS REPORT")
         print("=" * 80)
 
-        # Get date ranges for each database
         date_ranges = self.get_database_date_ranges()
 
         print(f"\nDatabase Files Found: {len(self.db_files)}")
@@ -1046,7 +1135,6 @@ class OrderFlowBacktester:
             print(f"  Full Path: {info['file_path']}")
             print()
 
-        # Analyze symbol coverage across databases
         if self.combined_data:
             print("Symbol Data Coverage:")
             print("-" * 30)
@@ -1086,446 +1174,82 @@ class OrderFlowBacktester:
         symbol_df.to_csv(symbol_filename, index=False)
         print(f"Symbol analysis exported to {symbol_filename}")
 
-    def create_order_flow_analysis_report(self):
-        """Create detailed analysis of order flow effectiveness"""
-        if not self.results:
-            return
-
-        summary_df = self.create_summary_report()
-
-        print("\n" + "=" * 120)
-        print("ORDER FLOW STRATEGY ANALYSIS:")
-        print("=" * 120)
-
-        # Analyze current parameters effectiveness
-        avg_win_rate = summary_df['Order Flow Win Rate (%)'].mean()
-        avg_return = summary_df['Total Return (%)'].mean()
-        avg_duration = summary_df['Avg Duration (min)'].mean()
-        avg_entry_imbalance = summary_df['Avg Entry Imbalance'].mean()
-        avg_entry_vol_ratio = summary_df['Avg Entry Vol Ratio'].mean()
-        avg_long_trades = summary_df['Long Trades'].mean()
-        avg_short_trades = summary_df['Short Trades'].mean()
-
-        print(f"Current Strategy Performance Summary:")
-        print(f"  Volume Imbalance Threshold: {self.volume_imbalance_threshold * 100}%")
-        print(f"  Volume Lookback Period: {self.volume_lookback}")
-        print(f"  Large Order Percentile: {self.order_size_percentile}th")
-        print(f"  Momentum Period: {self.momentum_period}")
-        print(f"  Trailing Stop: {self.trailing_stop_pct * 100}%")
-        print(f"  Average Win Rate: {avg_win_rate:.1f}%")
-        print(f"  Average Return: {avg_return:.2f}%")
-        print(f"  Average Duration: {avg_duration:.1f} minutes")
-        print(f"  Average Entry Imbalance: {avg_entry_imbalance:.3f}")
-        print(f"  Average Entry Volume Ratio: {avg_entry_vol_ratio:.2f}")
-        print(f"  Average Long Trades: {avg_long_trades:.1f}")
-        print(f"  Average Short Trades: {avg_short_trades:.1f}")
-
-        # Strategy direction analysis
-        long_bias_symbols = len(summary_df[summary_df['Long Trades'] > summary_df['Short Trades']])
-        short_bias_symbols = len(summary_df[summary_df['Short Trades'] > summary_df['Long Trades']])
-        balanced_symbols = len(summary_df[summary_df['Long Trades'] == summary_df['Short Trades']])
-
-        print(f"\nTrading Direction Analysis:")
-        print(f"  Long-biased symbols: {long_bias_symbols}")
-        print(f"  Short-biased symbols: {short_bias_symbols}")
-        print(f"  Balanced symbols: {balanced_symbols}")
-
-        # Imbalance threshold effectiveness
-        high_imbalance_entries = summary_df[summary_df['Avg Entry Imbalance'] > 0.7]
-        moderate_imbalance_entries = summary_df[(summary_df['Avg Entry Imbalance'] >= 0.6) & (summary_df['Avg Entry Imbalance'] <= 0.7)]
-        low_imbalance_entries = summary_df[summary_df['Avg Entry Imbalance'] < 0.6]
-
-        print(f"\nImbalance Threshold Effectiveness:")
-        if not high_imbalance_entries.empty:
-            print(f"  High Imbalance (>0.7): {len(high_imbalance_entries)} symbols, Avg Return: {high_imbalance_entries['Total Return (%)'].mean():.2f}%")
-        if not moderate_imbalance_entries.empty:
-            print(f"  Moderate Imbalance (0.6-0.7): {len(moderate_imbalance_entries)} symbols, Avg Return: {moderate_imbalance_entries['Total Return (%)'].mean():.2f}%")
-        if not low_imbalance_entries.empty:
-            print(f"  Low Imbalance (<0.6): {len(low_imbalance_entries)} symbols, Avg Return: {low_imbalance_entries['Total Return (%)'].mean():.2f}%")
-
-        # Volume ratio analysis
-        high_volume_entries = summary_df[summary_df['Avg Entry Vol Ratio'] > 2.0]
-        moderate_volume_entries = summary_df[(summary_df['Avg Entry Vol Ratio'] >= 1.5) & (summary_df['Avg Entry Vol Ratio'] <= 2.0)]
-        low_volume_entries = summary_df[summary_df['Avg Entry Vol Ratio'] < 1.5]
-
-        print(f"\nVolume Ratio Effectiveness:")
-        if not high_volume_entries.empty:
-            print(f"  High Volume (>2.0x): {len(high_volume_entries)} symbols, Avg Return: {high_volume_entries['Total Return (%)'].mean():.2f}%")
-        if not moderate_volume_entries.empty:
-            print(f"  Moderate Volume (1.5-2.0x): {len(moderate_volume_entries)} symbols, Avg Return: {moderate_volume_entries['Total Return (%)'].mean():.2f}%")
-        if not low_volume_entries.empty:
-            print(f"  Low Volume (<1.5x): {len(low_volume_entries)} symbols, Avg Return: {low_volume_entries['Total Return (%)'].mean():.2f}%")
-
-        print(f"\nOptimization Recommendations:")
-
-        # Imbalance threshold recommendations
-        if avg_entry_imbalance > 0.75:
-            print(f"🔧 Volume Imbalance Threshold: Consider lowering to 60-65% (current avg entry: {avg_entry_imbalance:.3f})")
-        elif avg_entry_imbalance < 0.62:
-            print(f"🔧 Volume Imbalance Threshold: Consider raising to 65-70% (current avg entry: {avg_entry_imbalance:.3f})")
-        else:
-            print(f"✅ Volume Imbalance Threshold: Current level appears optimal")
-
-        # Volume ratio recommendations
-        if avg_entry_vol_ratio < 1.3:
-            print(f"🔧 Volume Filter: Consider stricter volume requirements (current avg: {avg_entry_vol_ratio:.2f}x)")
-        elif avg_entry_vol_ratio > 2.5:
-            print(f"🔧 Volume Filter: Consider relaxing volume requirements (current avg: {avg_entry_vol_ratio:.2f}x)")
-        else:
-            print(f"✅ Volume Filter: Current level is appropriate")
-
-        # Direction bias recommendations
-        if long_bias_symbols > short_bias_symbols * 2:
-            print(f"📈 Strong Long Bias Detected: Consider adjusting short entry conditions")
-        elif short_bias_symbols > long_bias_symbols * 2:
-            print(f"📉 Strong Short Bias Detected: Consider adjusting long entry conditions")
-        else:
-            print(f"⚖️  Balanced Strategy: Good mix of long and short opportunities")
-
 
 # Example usage and main execution
 if __name__ == "__main__":
-    # Initialize Order Flow Backtester
+    # Initialize with debug_mode=True to see detailed diagnostics
     backtester = OrderFlowBacktester(
-        data_folder="data/symbolupdate",  # Folder containing database files
-        symbols=None,  # Auto-detect symbols from databases
-        volume_lookback=200,  # Volume moving average period
-        volume_imbalance_threshold=0.65,  # 65% threshold for buy/sell imbalance
-        order_size_percentile=75,  # 75th percentile for large order detection
-        momentum_period=5,  # Price momentum calculation period
-        trailing_stop_pct=0.4,  # 0.4% trailing stop loss
-        initial_capital=100000,  # Starting capital per symbol
-        square_off_time="15:20",  # 3:20 PM IST square-off time
-        min_data_points=100  # Minimum data points required per symbol
+        data_folder="data/symbolupdate",
+        symbols=None,
+        volume_lookback=200,
+        volume_imbalance_threshold=0.60,  # Relaxed from 0.65
+        order_size_percentile=75,
+        momentum_period=5,
+        trailing_stop_pct=0.4,
+        initial_capital=100000,
+        square_off_time="15:20",
+        min_data_points=100,
+        debug_mode=True  # Enable diagnostics
     )
 
     print("=" * 120)
-    print("ORDER FLOW TRADING STRATEGY BACKTESTER")
+    print("ORDER FLOW TRADING STRATEGY BACKTESTER - DIAGNOSTIC MODE")
     print("=" * 120)
-    print("Strategy Rules:")
-    print("1. Long Entry: Buy/Sell Volume Imbalance > 65% (favor buyers) + Large Volume + Positive Momentum")
-    print("2. Short Entry: Buy/Sell Volume Imbalance < 35% (favor sellers) + Large Volume + Negative Momentum")
-    print("3. Exit: 0.4% trailing stop loss or opposite signal")
-    print("4. Mandatory square-off at 3:20 PM IST (no overnight positions)")
-    print("5. Both long and short trading allowed")
-    print("6. Large volume = 75th percentile of recent volume")
-    print("7. Price momentum confirmation required")
-    print("8. Bid-ask imbalance alignment for confirmation")
+    print("Key Changes:")
+    print("✓ Relaxed buy/sell imbalance threshold: 60%/40% (was 65%/35%)")
+    print("✓ Relaxed volume ratio requirement: 1.1x (was 1.2x)")
+    print("✓ Relaxed bid-ask imbalance filter: ±0.05 (was ±0.1)")
+    print("✓ Adaptive signal generation based on data availability")
+    print("✓ Falls back to VPT when no buy/sell data available")
+    print("✓ Detailed diagnostic output enabled")
     print("=" * 120)
 
     try:
-        # Check prerequisites
         if not backtester.db_files:
             print("ERROR: No database files found!")
-            print("Setup Instructions:")
-            print("1. Create a 'data' folder in the script directory")
-            print("2. Place your .db files in the 'data' folder")
-            print("3. Expected schema: market_data table with OHLCV data and order book info")
             exit(1)
 
         if not backtester.symbols:
             print("ERROR: No symbols detected with sufficient data!")
-            print("Troubleshooting:")
-            print("1. Check database files contain market_data table")
-            print("2. Reduce min_data_points if needed")
-            print("3. Verify database schema matches expected format")
             exit(1)
 
-        # Create database analysis report
         backtester.create_database_analysis_report()
 
-        # Run the backtest
-        print(f"\nStarting order flow backtest...")
-        print(f"Entry Conditions:")
-        print(f"  - Buy/Sell Volume Imbalance > {backtester.volume_imbalance_threshold * 100}% (Long) or < {(1 - backtester.volume_imbalance_threshold) * 100}% (Short)")
-        print(f"  - Volume > {backtester.order_size_percentile}th percentile")
-        print(f"  - Price momentum alignment (5-period)")
-        print(f"  - Bid-ask imbalance confirmation")
-        print(f"Exit Conditions: {backtester.trailing_stop_pct * 100}% trailing stop or opposite signal")
-        print(f"Square-off Time: {backtester.square_off_time} IST")
-
+        print(f"\nStarting backtest with relaxed parameters...")
         results = backtester.run_backtest_sequential()
 
         if results:
-            print(f"\nBacktest completed for {len(results)} symbols")
+            print(f"\n{'=' * 120}")
+            print(f"Backtest completed for {len(results)} symbols")
+            print(f"{'=' * 120}")
 
-            # Create and display summary
             summary_df = backtester.create_summary_report()
-            print("\n" + "=" * 180)
-            print("ORDER FLOW TRADING STRATEGY BACKTEST SUMMARY")
+            print("\nSUMMARY REPORT")
             print("=" * 180)
             print(summary_df.round(2).to_string(index=False))
 
-            # Export results
-            print("\nExporting results to CSV files...")
+            print("\nExporting results...")
             backtester.export_results("order_flow_trading_strategy")
             backtester.export_symbol_analysis("order_flow_trading_strategy")
-
-            # Performance analysis
-            print("\n" + "=" * 120)
-            print("TOP PERFORMERS BY TOTAL RETURN:")
-            print("=" * 120)
-            top_performers = summary_df.head(5)[['Symbol', 'Total Return (%)', 'Order Flow Win Rate (%)',
-                                                 'Long Trades', 'Short Trades', 'Avg Duration (min)', 'Avg Entry Imbalance']]
-            print(top_performers.to_string(index=False))
-
-            # Strategy effectiveness analysis
-            print("\n" + "=" * 120)
-            print("ORDER FLOW STRATEGY EFFECTIVENESS ANALYSIS:")
-            print("=" * 120)
-
-            total_symbols = len(results)
-            profitable_symbols = len([r for r in results.values() if r['metrics']['total_return'] > 0])
-            avg_return = summary_df['Total Return (%)'].mean()
-            avg_win_rate = summary_df['Order Flow Win Rate (%)'].mean()
-            avg_trades = summary_df['Order Flow Trades'].mean()
-            avg_duration = summary_df['Avg Duration (min)'].mean()
-            total_long_trades = summary_df['Long Trades'].sum()
-            total_short_trades = summary_df['Short Trades'].sum()
-            total_trailing_stops = summary_df['Trailing Stop Exits'].sum()
-            total_signal_exits = summary_df['Signal Exits'].sum()
-            total_square_offs = summary_df['3:20 PM Square-offs'].sum()
-            avg_entry_imbalance = summary_df['Avg Entry Imbalance'].mean()
-            avg_entry_vol_ratio = summary_df['Avg Entry Vol Ratio'].mean()
-            avg_entry_momentum = summary_df['Avg Entry Momentum'].mean()
-
-            print(f"Symbols Backtested: {total_symbols}")
-            print(f"Profitable Symbols: {profitable_symbols} ({profitable_symbols / total_symbols * 100:.1f}%)")
-            print(f"Average Return: {avg_return:.2f}%")
-            print(f"Average Order Flow Win Rate: {avg_win_rate:.1f}%")
-            print(f"Average Order Flow Trades per Symbol: {avg_trades:.1f}")
-            print(f"Average Trade Duration: {avg_duration:.1f} minutes")
-            print(f"Total Long Trades: {total_long_trades}")
-            print(f"Total Short Trades: {total_short_trades}")
-            print(f"Long/Short Ratio: {total_long_trades / max(total_short_trades, 1):.2f}")
-            print(f"Total Trailing Stop Exits: {total_trailing_stops}")
-            print(f"Total Signal-based Exits: {total_signal_exits}")
-            print(f"Total 3:20 PM Square-offs: {total_square_offs}")
-            print(f"Average Entry Volume Imbalance: {avg_entry_imbalance:.3f}")
-            print(f"Average Entry Volume Ratio: {avg_entry_vol_ratio:.2f}x")
-            print(f"Average Entry Momentum: {avg_entry_momentum:.4f}")
-
-            # Exit analysis
-            total_exits = total_trailing_stops + total_signal_exits + total_square_offs
-            if total_exits > 0:
-                print(f"\nExit Method Breakdown:")
-                print(f"  Trailing Stop (0.4%): {total_trailing_stops} ({total_trailing_stops / total_exits * 100:.1f}%)")
-                print(f"  Signal-based Exits: {total_signal_exits} ({total_signal_exits / total_exits * 100:.1f}%)")
-                print(f"  3:20 PM Square-off: {total_square_offs} ({total_square_offs / total_exits * 100:.1f}%)")
-
-            # Trading direction analysis
-            print("\n" + "=" * 120)
-            print("TRADING DIRECTION ANALYSIS:")
-            print("=" * 120)
-
-            long_bias_symbols = len(summary_df[summary_df['Long Trades'] > summary_df['Short Trades']])
-            short_bias_symbols = len(summary_df[summary_df['Short Trades'] > summary_df['Long Trades']])
-            balanced_symbols = len(summary_df[summary_df['Long Trades'] == summary_df['Short Trades']])
-            long_only_symbols = len(summary_df[summary_df['Short Trades'] == 0])
-            short_only_symbols = len(summary_df[summary_df['Long Trades'] == 0])
-
-            print(f"Long-biased symbols: {long_bias_symbols} ({long_bias_symbols / total_symbols * 100:.1f}%)")
-            print(f"Short-biased symbols: {short_bias_symbols} ({short_bias_symbols / total_symbols * 100:.1f}%)")
-            print(f"Balanced symbols: {balanced_symbols} ({balanced_symbols / total_symbols * 100:.1f}%)")
-            print(f"Long-only symbols: {long_only_symbols} ({long_only_symbols / total_symbols * 100:.1f}%)")
-            print(f"Short-only symbols: {short_only_symbols} ({short_only_symbols / total_symbols * 100:.1f}%)")
-
-            # Performance by direction
-            if total_long_trades > 0 and total_short_trades > 0:
-                long_heavy = summary_df[summary_df['Long Trades'] > summary_df['Short Trades']]
-                short_heavy = summary_df[summary_df['Short Trades'] > summary_df['Long Trades']]
-
-                if not long_heavy.empty and not short_heavy.empty:
-                    print(f"\nPerformance by Trading Direction:")
-                    print(f"  Long-heavy symbols avg return: {long_heavy['Total Return (%)'].mean():.2f}%")
-                    print(f"  Short-heavy symbols avg return: {short_heavy['Total Return (%)'].mean():.2f}%")
-
-            # Best and worst performers
-            print("\n" + "=" * 120)
-            print("PERFORMANCE INSIGHTS:")
-            print("=" * 120)
-
-            best_performer = summary_df.iloc[0]
-            worst_performer = summary_df.iloc[-1]
-
-            print(f"Best Performer: {best_performer['Symbol']} (+{best_performer['Total Return (%)']:.2f}%)")
-            print(f"  - Order Flow Win Rate: {best_performer['Order Flow Win Rate (%)']:.1f}%")
-            print(f"  - Long/Short Trades: {best_performer['Long Trades']:.0f}/{best_performer['Short Trades']:.0f}")
-            print(f"  - Average Trade Duration: {best_performer['Avg Duration (min)']:.1f} minutes")
-            print(f"  - Average Entry Imbalance: {best_performer['Avg Entry Imbalance']:.3f}")
-            print(f"  - Average Entry Volume Ratio: {best_performer['Avg Entry Vol Ratio']:.2f}x")
-
-            print(f"\nWorst Performer: {worst_performer['Symbol']} ({worst_performer['Total Return (%)']:.2f}%)")
-            print(f"  - Order Flow Win Rate: {worst_performer['Order Flow Win Rate (%)']:.1f}%")
-            print(f"  - Long/Short Trades: {worst_performer['Long Trades']:.0f}/{worst_performer['Short Trades']:.0f}")
-            print(f"  - Average Trade Duration: {worst_performer['Avg Duration (min)']:.1f} minutes")
-            print(f"  - Average Entry Imbalance: {worst_performer['Avg Entry Imbalance']:.3f}")
-
-            # Volume imbalance effectiveness analysis
-            print("\n" + "=" * 120)
-            print("VOLUME IMBALANCE EFFECTIVENESS ANALYSIS:")
-            print("=" * 120)
-
-            high_imbalance = summary_df[summary_df['Avg Entry Imbalance'] > 0.7]
-            moderate_imbalance = summary_df[(summary_df['Avg Entry Imbalance'] >= 0.6) & (summary_df['Avg Entry Imbalance'] <= 0.7)]
-            low_imbalance = summary_df[summary_df['Avg Entry Imbalance'] < 0.6]
-
-            print("Performance by Entry Volume Imbalance:")
-            if not high_imbalance.empty:
-                print(
-                    f"  High Imbalance (>0.7): {len(high_imbalance)} symbols, Avg Return: {high_imbalance['Total Return (%)'].mean():.2f}%, Avg Win Rate: {high_imbalance['Order Flow Win Rate (%)'].mean():.1f}%")
-            if not moderate_imbalance.empty:
-                print(
-                    f"  Moderate Imbalance (0.6-0.7): {len(moderate_imbalance)} symbols, Avg Return: {moderate_imbalance['Total Return (%)'].mean():.2f}%, Avg Win Rate: {moderate_imbalance['Order Flow Win Rate (%)'].mean():.1f}%")
-            if not low_imbalance.empty:
-                print(
-                    f"  Low Imbalance (<0.6): {len(low_imbalance)} symbols, Avg Return: {low_imbalance['Total Return (%)'].mean():.2f}%, Avg Win Rate: {low_imbalance['Order Flow Win Rate (%)'].mean():.1f}%")
-
-            # Volume ratio analysis
-            high_volume = summary_df[summary_df['Avg Entry Vol Ratio'] > 2.0]
-            moderate_volume = summary_df[(summary_df['Avg Entry Vol Ratio'] >= 1.5) & (summary_df['Avg Entry Vol Ratio'] <= 2.0)]
-            low_volume = summary_df[summary_df['Avg Entry Vol Ratio'] < 1.5]
-
-            print("\nPerformance by Entry Volume Ratio:")
-            if not high_volume.empty:
-                print(f"  High Volume (>2.0x): {len(high_volume)} symbols, Avg Return: {high_volume['Total Return (%)'].mean():.2f}%")
-            if not moderate_volume.empty:
-                print(f"  Moderate Volume (1.5-2.0x): {len(moderate_volume)} symbols, Avg Return: {moderate_volume['Total Return (%)'].mean():.2f}%")
-            if not low_volume.empty:
-                print(f"  Low Volume (<1.5x): {len(low_volume)} symbols, Avg Return: {low_volume['Total Return (%)'].mean():.2f}%")
-
-            # Trade duration analysis
-            print("\nPerformance by Trade Duration:")
-            quick_trades = summary_df[summary_df['Avg Duration (min)'] < 20]
-            medium_trades = summary_df[(summary_df['Avg Duration (min)'] >= 20) & (summary_df['Avg Duration (min)'] < 40)]
-            long_trades = summary_df[summary_df['Avg Duration (min)'] >= 40]
-
-            if not quick_trades.empty:
-                print(f"  Quick Trades (<20 min): {len(quick_trades)} symbols, Avg Return: {quick_trades['Total Return (%)'].mean():.2f}%")
-            if not medium_trades.empty:
-                print(f"  Medium Trades (20-40 min): {len(medium_trades)} symbols, Avg Return: {medium_trades['Total Return (%)'].mean():.2f}%")
-            if not long_trades.empty:
-                print(f"  Long Trades (≥40 min): {len(long_trades)} symbols, Avg Return: {long_trades['Total Return (%)'].mean():.2f}%")
-
-            # Risk-adjusted performance
-            print("\n" + "=" * 120)
-            print("RISK-ADJUSTED PERFORMANCE ANALYSIS:")
-            print("=" * 120)
-
-            good_sharpe = summary_df[summary_df['Sharpe Ratio'] > 1.0]
-            decent_sharpe = summary_df[(summary_df['Sharpe Ratio'] > 0.5) & (summary_df['Sharpe Ratio'] <= 1.0)]
-            poor_sharpe = summary_df[summary_df['Sharpe Ratio'] <= 0.5]
-
-            if not good_sharpe.empty:
-                print(f"Excellent Risk-Adj Return (Sharpe > 1.0): {len(good_sharpe)} symbols")
-                print(
-                    f"  Top performer: {good_sharpe.iloc[0]['Symbol']} (Sharpe: {good_sharpe.iloc[0]['Sharpe Ratio']:.2f}, Return: {good_sharpe.iloc[0]['Total Return (%)']:.2f}%)")
-            if not decent_sharpe.empty:
-                print(f"Good Risk-Adj Return (Sharpe 0.5-1.0): {len(decent_sharpe)} symbols")
-            if not poor_sharpe.empty:
-                print(f"Poor Risk-Adj Return (Sharpe ≤ 0.5): {len(poor_sharpe)} symbols")
-
-            # Maximum drawdown analysis
-            low_dd = summary_df[summary_df['Max Drawdown (%)'] < 5]
-            medium_dd = summary_df[(summary_df['Max Drawdown (%)'] >= 5) & (summary_df['Max Drawdown (%)'] < 10)]
-            high_dd = summary_df[summary_df['Max Drawdown (%)'] >= 10]
-
-            print(f"\nDrawdown Analysis:")
-            if not low_dd.empty:
-                print(f"  Low Drawdown (<5%): {len(low_dd)} symbols, Avg Return: {low_dd['Total Return (%)'].mean():.2f}%")
-            if not medium_dd.empty:
-                print(f"  Medium Drawdown (5-10%): {len(medium_dd)} symbols, Avg Return: {medium_dd['Total Return (%)'].mean():.2f}%")
-            if not high_dd.empty:
-                print(f"  High Drawdown (≥10%): {len(high_dd)} symbols, Avg Return: {high_dd['Total Return (%)'].mean():.2f}%")
 
             print("\n" + "=" * 120)
             print("FILES EXPORTED:")
             print("=" * 120)
-            print("1. order_flow_trading_strategy_summary.csv - Performance summary")
-            print("2. order_flow_trading_strategy_all_trades.csv - All trade records")
-            print("3. order_flow_trading_strategy_detailed_trades.csv - Detailed trade analysis")
-            print("4. order_flow_trading_strategy_symbol_analysis.csv - Symbol detection analysis")
-            print("=" * 120)
-
-            # Create order flow specific analysis
-            backtester.create_order_flow_analysis_report()
-
-            # Strategy optimization recommendations
-            print("\n" + "=" * 120)
-            print("STRATEGY OPTIMIZATION RECOMMENDATIONS:")
-            print("=" * 120)
-
-            if avg_win_rate < 45:
-                print("⚠️  Low win rate detected. Consider:")
-                print("   - Increasing volume imbalance threshold (try 70%)")
-                print("   - Adding stricter momentum filters")
-                print("   - Requiring larger volume spikes")
-                print("   - Adding volatility filters")
-
-            if avg_duration > 50:
-                print("⚠️  Long average trade duration. Consider:")
-                print("   - Tightening trailing stop (try 0.3%)")
-                print("   - Adding profit targets")
-                print("   - Earlier exit on momentum reversal")
-
-            if total_long_trades > total_short_trades * 3:
-                print("📈 Strong long bias detected. Consider:")
-                print("   - Adjusting short entry thresholds")
-                print("   - Different parameters for short trades")
-                print("   - Market regime detection")
-
-            if total_short_trades > total_long_trades * 3:
-                print("📉 Strong short bias detected. Consider:")
-                print("   - Adjusting long entry thresholds")
-                print("   - Different parameters for long trades")
-                print("   - Trend following filters")
-
-            profitable_rate = profitable_symbols / total_symbols
-            if profitable_rate > 0.6:
-                print("✅ Strong strategy performance across symbols!")
-                print("   - Consider increasing position sizing")
-                print("   - Test with higher capital allocation")
-                print("   - Add portfolio optimization")
-            elif profitable_rate < 0.4:
-                print("⚠️  Low profitability rate. Consider:")
-                print("   - Stricter symbol selection criteria")
-                print("   - Additional confluence factors")
-                print("   - Market condition filters")
-                print("   - Different timeframes for signals")
-
-            if avg_entry_vol_ratio < 1.5:
-                print("📊 Low volume ratio entries. Consider:")
-                print("   - Stricter volume requirements")
-                print("   - Higher percentile thresholds")
-                print("   - Volume surge detection")
-
-            if total_square_offs > (total_trailing_stops + total_signal_exits):
-                print("🕒 Many square-off exits. Consider:")
-                print("   - Earlier entry cutoff time")
-                print("   - Faster exit conditions for late entries")
-                print("   - Minimum holding period requirements")
-
-            print("\n" + "=" * 120)
-            print("PARAMETER TESTING SCENARIOS:")
-            print("=" * 120)
-            print("Recommended parameter combinations to test:")
-            print("1. Conservative: 70% imbalance, 80th percentile volume, 0.3% trailing stop")
-            print("2. Aggressive: 60% imbalance, 70th percentile volume, 0.5% trailing stop")
-            print("3. High Frequency: 65% imbalance, 75th percentile volume, 0.25% trailing stop, shorter momentum")
-            print("4. Quality Focus: 75% imbalance, 85th percentile volume, 0.4% trailing stop, longer lookback")
-            print("5. Momentum Focus: 65% imbalance, 75th percentile volume, 0.3% trailing stop, 3-period momentum")
+            print("1. order_flow_trading_strategy_summary.csv")
+            print("2. order_flow_trading_strategy_all_trades.csv")
+            print("3. order_flow_trading_strategy_detailed_trades.csv")
+            print("4. order_flow_trading_strategy_symbol_analysis.csv")
 
         else:
-            print("No successful backtests completed.")
-            print("Troubleshooting:")
-            print("1. Check database files exist and are accessible")
-            print("2. Verify sufficient data for order flow calculations")
-            print("3. Ensure database schema includes order book data")
-            print("4. Check symbol detection and filtering criteria")
-            print("5. Verify raw_data field contains order flow information")
+            print("\n⚠️  No successful backtests completed.")
+            print("\nTroubleshooting steps:")
+            print("1. Check if debug output shows any signals being generated")
+            print("2. Verify your raw_data contains order flow fields")
+            print("3. Try further relaxing parameters (threshold=0.55, volume_ratio=1.0)")
+            print("4. Check if data has sufficient variability")
 
     except Exception as e:
-        print(f"Error running order flow backtest: {e}")
+        print(f"Error: {e}")
         import traceback
 
         traceback.print_exc()
