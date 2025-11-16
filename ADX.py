@@ -875,9 +875,9 @@ if __name__ == "__main__":
     backtester = MultiDatabaseDIBacktester(
         data_folder="data/symbolupdate",  # Folder containing database files
         symbols=None,  # Auto-detect symbols from databases (set to None)
-        period=9,  # DI calculation period
-        volume_threshold_percentile=50,  # Volume filter (60th percentile)
-        trailing_stop_pct=3,  # 5% trailing stop loss
+        period=60,  # DI calculation period
+        volume_threshold_percentile=30,  # Volume filter (60th percentile)
+        trailing_stop_pct=6,  # 5% trailing stop loss
         initial_capital=100000,  # Starting capital per symbol
         square_off_time="15:20",  # 3:20 PM IST square-off time
         min_data_points=100  # Minimum data points required per symbol
