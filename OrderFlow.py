@@ -1182,8 +1182,8 @@ if __name__ == "__main__":
         data_folder="data/symbolupdate",
         symbols=None,
         volume_lookback=200,
-        volume_imbalance_threshold=0.60,  # Relaxed from 0.65
-        order_size_percentile=75,
+        volume_imbalance_threshold=0.50,  # Relaxed from 0.65
+        order_size_percentile=50,
         momentum_period=5,
         trailing_stop_pct=0.4,
         initial_capital=100000,

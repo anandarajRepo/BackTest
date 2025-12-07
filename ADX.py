@@ -15,7 +15,7 @@ warnings.filterwarnings('ignore')
 class MultiDatabaseDIBacktester:
     def __init__(self, data_folder="data", symbols=None, period=14, volume_threshold_percentile=50,
                  trailing_stop_pct=3.0, initial_capital=100000, square_off_time="15:20",
-                 min_data_points=100):
+                 min_data_points=100, breakeven_profit_pct=1.0):
         """
         Initialize the Multi-Database Multi-Symbol DI Crossover Backtester
 
@@ -28,6 +28,7 @@ class MultiDatabaseDIBacktester:
         - initial_capital: Starting capital for backtesting (per symbol)
         - square_off_time: Time to square off all positions in HH:MM format (default "15:20" for 3:20 PM)
         - min_data_points: Minimum data points required for a symbol to be included (default 100)
+        - breakeven_profit_pct: Profit percentage to trigger breakeven stop (default 1%)
         """
         self.data_folder = data_folder
         self.db_files = self.find_database_files()
@@ -37,6 +38,7 @@ class MultiDatabaseDIBacktester:
         self.initial_capital = initial_capital
         self.square_off_time = self.parse_square_off_time(square_off_time)
         self.min_data_points = min_data_points
+        self.breakeven_profit_pct = breakeven_profit_pct / 100  # Convert to decimal
         self.results = {}
         self.combined_data = {}
 
@@ -46,6 +48,7 @@ class MultiDatabaseDIBacktester:
         print(f"Data folder: {self.data_folder}")
         print(f"Square-off time: {square_off_time} IST")
         print(f"Minimum data points required per symbol: {self.min_data_points}")
+        print(f"Breakeven stop trigger: {breakeven_profit_pct}% profit")
         print(f"Found {len(self.db_files)} database files:")
         for db_file in self.db_files:
             print(f"  - {os.path.basename(db_file)}")
@@ -420,7 +423,7 @@ class MultiDatabaseDIBacktester:
             return timestamp.time() >= self.square_off_time
 
     def backtest_single_symbol(self, symbol):
-        """Backtest strategy for a single symbol with 3:20 PM IST square-off"""
+        """Backtest strategy for a single symbol with 3:20 PM IST square-off and breakeven stop"""
         print(f"\nStarting backtest for {symbol}")
 
         # Load and combine data from all databases
@@ -447,6 +450,7 @@ class MultiDatabaseDIBacktester:
         position = 0  # 0: no position, 1: long position
         entry_price = 0
         trailing_stop_price = 0
+        breakeven_triggered = False  # Track if breakeven has been triggered
         portfolio_value = []
         trades = []
         entry_day = None
@@ -479,11 +483,13 @@ class MultiDatabaseDIBacktester:
                     'exit_price': round(current_price, 2),
                     'entry_price': round(trades[-1]['entry_price'], 2) if trades else 0,
                     'trade_return_pct': round(((current_price - trades[-1]['entry_price']) / trades[-1]['entry_price'] * 100), 2) if trades else 0,
-                    'trade_pnl': round((shares * (current_price - trades[-1]['entry_price'])), 2) if trades else 0
+                    'trade_pnl': round((shares * (current_price - trades[-1]['entry_price'])), 2) if trades else 0,
+                    'breakeven_triggered': breakeven_triggered
                 })
 
                 # Reset for next day
                 entry_day = None
+                breakeven_triggered = False
 
             # Check for buy signal (only if not in position and not at/after square-off time)
             elif df.iloc[i]['buy_signal'] and position == 0 and not is_square_off:
@@ -494,6 +500,7 @@ class MultiDatabaseDIBacktester:
                     entry_price = current_price
                     entry_day = current_day
                     trailing_stop_price = entry_price * (1 - self.trailing_stop_pct)
+                    breakeven_triggered = False
                     cost = shares * current_price
                     cash -= cost
 
@@ -513,9 +520,20 @@ class MultiDatabaseDIBacktester:
 
             # Check for sell signals or trailing stop (only if in position and same day and before square-off)
             elif position == 1 and entry_day == current_day and not is_square_off:
-                # Update trailing stop
+                # Update trailing stop with breakeven protection
                 if current_price > entry_price:
+                    # Calculate new trailing stop based on current price
                     new_trailing_stop = current_price * (1 - self.trailing_stop_pct)
+
+                    # If position is profitable by more than breakeven_profit_pct, move stop to breakeven (entry price)
+                    if current_price >= entry_price * (1 + self.breakeven_profit_pct):
+                        if not breakeven_triggered:
+                            breakeven_triggered = True
+                            print(f"  {symbol}: Breakeven triggered at {current_price:.2f} (entry: {entry_price:.2f})")
+                        # Ensure stop loss is at least at entry price (breakeven)
+                        trailing_stop_price = max(trailing_stop_price, entry_price)
+
+                    # Update trailing stop to highest value
                     trailing_stop_price = max(trailing_stop_price, new_trailing_stop)
 
                 # Check exit conditions (excluding square-off as it's handled above)
@@ -525,8 +543,15 @@ class MultiDatabaseDIBacktester:
                 )
 
                 if should_exit:
+                    # Determine exit reason
+                    if df.iloc[i]['sell_signal']:
+                        exit_reason = 'SELL_SIGNAL'
+                    elif breakeven_triggered and abs(current_price - entry_price) < 0.01:
+                        exit_reason = 'BREAKEVEN_STOP'
+                    else:
+                        exit_reason = 'TRAILING_STOP'
+
                     # Exit position
-                    exit_reason = 'SELL_SIGNAL' if df.iloc[i]['sell_signal'] else 'TRAILING_STOP'
                     shares = trades[-1]['shares']  # Get shares from last buy
                     proceeds = shares * current_price
                     cash += proceeds
@@ -546,11 +571,13 @@ class MultiDatabaseDIBacktester:
                         'exit_price': round(current_price, 2),
                         'entry_price': round(trades[-1]['entry_price'], 2) if trades else 0,
                         'trade_return_pct': round(((current_price - trades[-1]['entry_price']) / trades[-1]['entry_price'] * 100), 2) if trades else 0,
-                        'trade_pnl': round((shares * (current_price - trades[-1]['entry_price'])), 2) if trades else 0
+                        'trade_pnl': round((shares * (current_price - trades[-1]['entry_price'])), 2) if trades else 0,
+                        'breakeven_triggered': breakeven_triggered
                     })
 
                     # Reset for potential new trade same day
                     entry_day = None
+                    breakeven_triggered = False
 
             # Calculate portfolio value
             if position == 1:
@@ -589,7 +616,7 @@ class MultiDatabaseDIBacktester:
         }
 
     def calculate_intraday_metrics(self, trades):
-        """Calculate intraday-specific performance metrics including 3:20 PM square-offs"""
+        """Calculate intraday-specific performance metrics including 3:20 PM square-offs and breakeven stops"""
         if not trades:
             return {
                 'total_intraday_trades': 0,
@@ -598,6 +625,7 @@ class MultiDatabaseDIBacktester:
                 'square_off_3_20_closures': 0,
                 'signal_exits': 0,
                 'trailing_stop_exits': 0,
+                'breakeven_stop_exits': 0,
                 'intraday_win_rate': 0,
                 'avg_intraday_return': 0
             }
@@ -611,6 +639,7 @@ class MultiDatabaseDIBacktester:
         square_off_3_20_count = 0
         signal_exit_count = 0
         trailing_stop_count = 0
+        breakeven_stop_count = 0
         intraday_returns = []
 
         for i in range(min(len(buy_trades), len(sell_trades))):
@@ -633,6 +662,8 @@ class MultiDatabaseDIBacktester:
                 square_off_3_20_count += 1
             elif exit_reason == 'SELL_SIGNAL':
                 signal_exit_count += 1
+            elif exit_reason == 'BREAKEVEN_STOP':
+                breakeven_stop_count += 1
             elif exit_reason == 'TRAILING_STOP':
                 trailing_stop_count += 1
 
@@ -652,6 +683,7 @@ class MultiDatabaseDIBacktester:
             'square_off_3_20_closures': square_off_3_20_count,
             'signal_exits': signal_exit_count,
             'trailing_stop_exits': trailing_stop_count,
+            'breakeven_stop_exits': breakeven_stop_count,
             'intraday_win_rate': round(intraday_win_rate, 4),
             'avg_intraday_return': round(avg_intraday_return, 4)
         }
@@ -719,7 +751,8 @@ class MultiDatabaseDIBacktester:
     def run_backtest_sequential(self):
         """Run backtest for all symbols sequentially"""
         print(f"\nStarting multi-database backtest for {len(self.symbols)} symbols")
-        print(f"Parameters: Period={self.period}, Volume Threshold={self.volume_threshold_percentile}th percentile, Trailing Stop={self.trailing_stop_pct * 100}%")
+        print(f"Parameters: Period={self.period}, Volume Threshold={self.volume_threshold_percentile}th percentile")
+        print(f"Trailing Stop={self.trailing_stop_pct * 100}%, Breakeven Trigger={self.breakeven_profit_pct * 100}%")
         print(f"Database files: {len(self.db_files)}")
 
         for symbol in self.symbols:
@@ -761,6 +794,7 @@ class MultiDatabaseDIBacktester:
                 '3:20 PM Square-offs': metrics.get('square_off_3_20_closures', 0),
                 'Signal Exits': metrics.get('signal_exits', 0),
                 'Trailing Stop Exits': metrics.get('trailing_stop_exits', 0),
+                'Breakeven Stop Exits': metrics.get('breakeven_stop_exits', 0),
                 'Avg Duration (min)': metrics.get('avg_trade_duration_minutes', 0),
                 'Intraday Win Rate (%)': metrics.get('intraday_win_rate', 0) * 100,
                 'Data Points': data_summary['total_records'],
@@ -805,7 +839,7 @@ class MultiDatabaseDIBacktester:
                     print(f"  Total: {len(df)} records")
                     print(f"  Date range: {df.index.min()} to {df.index.max()}")
 
-    def export_results(self, filename_prefix="multi_db_di_crossover"):
+    def export_results(self, filename_prefix="multi_db_di_crossover_breakeven"):
         """Export all results to CSV files"""
         if not self.results:
             print("No results to export.")
@@ -871,20 +905,21 @@ class MultiDatabaseDIBacktester:
 
 # Example usage
 if __name__ == "__main__":
-    # Initialize multi-database backtester with AUTO-DETECTION of symbols
+    # Initialize multi-database backtester with AUTO-DETECTION of symbols and BREAKEVEN STOP
     backtester = MultiDatabaseDIBacktester(
         data_folder="data/symbolupdate",  # Folder containing database files
         symbols=None,  # Auto-detect symbols from databases (set to None)
         period=60,  # DI calculation period
-        volume_threshold_percentile=30,  # Volume filter (60th percentile)
-        trailing_stop_pct=6,  # 5% trailing stop loss
+        volume_threshold_percentile=60,  # Volume filter (30th percentile)
+        trailing_stop_pct=6,  # 6% trailing stop loss
         initial_capital=100000,  # Starting capital per symbol
         square_off_time="15:20",  # 3:20 PM IST square-off time
-        min_data_points=100  # Minimum data points required per symbol
+        min_data_points=100,  # Minimum data points required per symbol
+        breakeven_profit_pct=1.0  # Move stop to breakeven at 1% profit
     )
 
     print("=" * 100)
-    print("AUTO-DETECTED SYMBOLS 3:20 PM IST SQUARE-OFF DI CROSSOVER STRATEGY")
+    print("AUTO-DETECTED SYMBOLS WITH BREAKEVEN STOP - 3:20 PM IST SQUARE-OFF DI CROSSOVER STRATEGY")
     print("=" * 100)
     print("Strategy Rules:")
     print("1. Symbols automatically detected from database files")
@@ -894,7 +929,9 @@ if __name__ == "__main__":
     print("5. Automatic square-off at 3:20 PM regardless of P&L")
     print("6. Buy signals ignored at or after 3:20 PM")
     print("7. Multiple intraday trades allowed before 3:20 PM")
-    print("8. Data read from 'data' folder containing .db files")
+    print("8. BREAKEVEN STOP: When position is up 1%, stop loss moves to entry price")
+    print("9. Trailing stop continues to trail above breakeven level")
+    print("10. Data read from 'data' folder containing .db files")
     print("=" * 100)
 
     try:
@@ -920,7 +957,7 @@ if __name__ == "__main__":
         backtester.create_database_analysis_report()
 
         # Run backtest
-        print(f"\nStarting 3:20 PM square-off backtest for {len(backtester.symbols)} auto-detected symbols...")
+        print(f"\nStarting 3:20 PM square-off backtest with breakeven stop for {len(backtester.symbols)} auto-detected symbols...")
         results = backtester.run_backtest_sequential()
 
         if results:
@@ -929,23 +966,23 @@ if __name__ == "__main__":
             # Create and display summary report
             summary_df = backtester.create_summary_report()
             print("\n" + "=" * 150)
-            print("AUTO-DETECTED SYMBOLS INTRADAY 3:20 PM SQUARE-OFF STRATEGY BACKTEST SUMMARY")
+            print("AUTO-DETECTED SYMBOLS WITH BREAKEVEN STOP - INTRADAY 3:20 PM SQUARE-OFF STRATEGY BACKTEST SUMMARY")
             print("=" * 150)
             print(summary_df.round(2).to_string(index=False))
 
             # Export results
             print("\nExporting results to CSV files...")
-            backtester.export_results("auto_detected_intraday_3_20_square_off_strategy")
+            backtester.export_results("auto_detected_breakeven_intraday_3_20_square_off_strategy")
 
             # Performance ranking
             print("\n" + "=" * 100)
-            print("TOP PERFORMERS BY TOTAL RETURN (AUTO-DETECTED SYMBOLS 3:20 PM SQUARE-OFF):")
+            print("TOP PERFORMERS BY TOTAL RETURN (WITH BREAKEVEN STOP):")
             print("=" * 100)
-            top_performers = summary_df.head(5)[['Symbol', 'Total Return (%)', 'Intraday Win Rate (%)', '3:20 PM Square-offs', 'Signal Exits', 'Avg Duration (min)']]
+            top_performers = summary_df.head(5)[['Symbol', 'Total Return (%)', 'Intraday Win Rate (%)', 'Breakeven Stop Exits', '3:20 PM Square-offs', 'Avg Duration (min)']]
             print(top_performers.to_string(index=False))
 
             print("\n" + "=" * 100)
-            print("AUTO-DETECTED SYMBOLS 3:20 PM SQUARE-OFF STRATEGY EFFECTIVENESS ANALYSIS:")
+            print("BREAKEVEN STOP EFFECTIVENESS ANALYSIS:")
             print("=" * 100)
 
             # Calculate overall strategy statistics
@@ -959,6 +996,7 @@ if __name__ == "__main__":
             total_square_offs = summary_df['3:20 PM Square-offs'].sum()
             total_signal_exits = summary_df['Signal Exits'].sum()
             total_trailing_stops = summary_df['Trailing Stop Exits'].sum()
+            total_breakeven_stops = summary_df['Breakeven Stop Exits'].sum()
 
             print(f"Symbols Auto-Detected: {len(backtester.symbols)}")
             print(f"Symbols Successfully Backtested: {total_symbols}")
@@ -971,25 +1009,40 @@ if __name__ == "__main__":
             print(f"Total 3:20 PM Square-offs: {total_square_offs}")
             print(f"Total Signal-based Exits: {total_signal_exits}")
             print(f"Total Trailing Stop Exits: {total_trailing_stops}")
+            print(f"Total Breakeven Stop Exits: {total_breakeven_stops}")
 
             # Calculate exit breakdown percentages
-            total_exits = total_square_offs + total_signal_exits + total_trailing_stops
+            total_exits = total_square_offs + total_signal_exits + total_trailing_stops + total_breakeven_stops
             if total_exits > 0:
                 print(f"\nExit Breakdown:")
                 print(f"  3:20 PM Square-offs: {total_square_offs} ({total_square_offs / total_exits * 100:.1f}%)")
                 print(f"  Signal-based Exits: {total_signal_exits} ({total_signal_exits / total_exits * 100:.1f}%)")
                 print(f"  Trailing Stop Exits: {total_trailing_stops} ({total_trailing_stops / total_exits * 100:.1f}%)")
+                print(f"  Breakeven Stop Exits: {total_breakeven_stops} ({total_breakeven_stops / total_exits * 100:.1f}%)")
+
+            # Breakeven stop insights
+            if total_breakeven_stops > 0:
+                print(f"\nBreakeven Stop Impact:")
+                print(f"  Total trades protected by breakeven: {total_breakeven_stops}")
+                print(f"  Percentage of all exits: {total_breakeven_stops / total_exits * 100:.1f}%")
+                print(f"  This feature prevented potential losses on trades that reached 1% profit")
 
             # Strategy insights
             print("\n" + "=" * 100)
-            print("AUTO-DETECTED SYMBOLS 3:20 PM SQUARE-OFF STRATEGY INSIGHTS:")
+            print("STRATEGY INSIGHTS:")
             print("=" * 100)
+
+            # Most breakeven-dependent symbols
+            if 'Breakeven Stop Exits' in summary_df.columns:
+                high_breakeven = summary_df.nlargest(3, 'Breakeven Stop Exits')[['Symbol', 'Breakeven Stop Exits', 'Total Return (%)']]
+                print("Symbols with Most Breakeven Stop Exits:")
+                print(high_breakeven.to_string(index=False))
 
             # Most square-off dependent symbols
             high_square_off = summary_df.nlargest(3, '3:20 PM Square-offs')[['Symbol', '3:20 PM Square-offs', 'Total Return (%)']]
             best_signal_exits = summary_df.nlargest(3, 'Signal Exits')[['Symbol', 'Signal Exits', 'Total Return (%)']]
 
-            print("Symbols with Most 3:20 PM Square-offs:")
+            print("\nSymbols with Most 3:20 PM Square-offs:")
             print(high_square_off.to_string(index=False))
 
             print("\nSymbols with Most Signal-based Exits:")
@@ -1017,18 +1070,17 @@ if __name__ == "__main__":
             best_symbol = summary_df.iloc[0]['Symbol']
             best_return = summary_df.iloc[0]['Total Return (%)']
             best_square_offs = summary_df.iloc[0]['3:20 PM Square-offs']
+            best_breakeven = summary_df.iloc[0]['Breakeven Stop Exits']
             print(f"\nBest Performing Symbol: {best_symbol} (+{best_return:.2f}%)")
-            print(f"3:20 PM Square-offs for best performer: {best_square_offs}")
+            print(f"3:20 PM Square-offs: {best_square_offs}, Breakeven Stops: {best_breakeven}")
 
             print("\n" + "=" * 100)
             print("FILES EXPORTED:")
             print("=" * 100)
-            print("1. auto_detected_intraday_3_20_square_off_strategy_summary.csv - Performance summary")
-            print("2. auto_detected_intraday_3_20_square_off_strategy_all_trades.csv - All trade details")
-            print("3. auto_detected_intraday_3_20_square_off_strategy_database_analysis.csv - Database info")
-            print("4. auto_detected_intraday_3_20_square_off_strategy_symbol_analysis.csv - Symbol detection analysis")
-            print("5. auto_detected_intraday_3_20_square_off_strategy_detailed_trades.csv - Enhanced trade details with entry/exit")
-            print("6. auto_detected_intraday_3_20_square_off_strategy_trade_summary.csv - Trade performance summary")
+            print("1. auto_detected_breakeven_intraday_3_20_square_off_strategy_summary.csv - Performance summary")
+            print("2. auto_detected_breakeven_intraday_3_20_square_off_strategy_all_trades.csv - All trade details")
+            print("3. auto_detected_breakeven_intraday_3_20_square_off_strategy_database_analysis.csv - Database info")
+            print("4. auto_detected_breakeven_intraday_3_20_square_off_strategy_symbol_analysis.csv - Symbol detection analysis")
             print("=" * 100)
 
         else:
@@ -1040,7 +1092,7 @@ if __name__ == "__main__":
             print("4. Sufficient data available for analysis")
 
     except Exception as e:
-        print(f"Error running auto-detected symbols 3:20 PM square-off backtest: {e}")
+        print(f"Error running auto-detected symbols with breakeven stop backtest: {e}")
         import traceback
 
         traceback.print_exc()
