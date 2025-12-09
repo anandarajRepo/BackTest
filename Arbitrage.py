@@ -773,21 +773,21 @@ if __name__ == "__main__":
 
     # Example symbol pairs (adjust based on available Fyers symbols)
     symbol_pairs = [
-        # {
-        #     'spot': 'NSE:RELIANCE-EQ',
-        #     'futures': 'NSE:RELIANCE25DECFUT',  # Adjust month as needed
-        #     'base_name': 'RELIANCE'
-        # },
-        # {
-        #     'spot': 'NSE:HDFCBANK-EQ',
-        #     'futures': 'NSE:HDFCBANK25DECFUT',
-        #     'base_name': 'HDFCBANK'
-        # },
-        # {
-        #     'spot': 'NSE:INFY-EQ',
-        #     'futures': 'NSE:INFY25DECFUT',
-        #     'base_name': 'INFY'
-        # },
+        {
+            'spot': 'NSE:RELIANCE-EQ',
+            'futures': 'NSE:RELIANCE25DECFUT',  # Adjust month as needed
+            'base_name': 'RELIANCE'
+        },
+        {
+            'spot': 'NSE:HDFCBANK-EQ',
+            'futures': 'NSE:HDFCBANK25DECFUT',
+            'base_name': 'HDFCBANK'
+        },
+        {
+            'spot': 'NSE:INFY-EQ',
+            'futures': 'NSE:INFY25DECFUT',
+            'base_name': 'INFY'
+        },
         {
             'spot': 'NSE:TCS-EQ',
             'futures': 'NSE:TCS25DECFUT',
