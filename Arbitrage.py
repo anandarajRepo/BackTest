@@ -1,14 +1,17 @@
-import sqlite3
 import pandas as pd
 import numpy as np
 import json
-import glob
-import os
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import pytz
 import warnings
 from dataclasses import dataclass
 from typing import List, Dict, Optional
+from fyers_apiv3 import fyersModel
+from dotenv import load_dotenv
+import os
+
+# Load environment variables
+load_dotenv()
 
 warnings.filterwarnings('ignore')
 
@@ -41,13 +44,14 @@ class ArbitrageTrade:
 
 
 class SpotFuturesArbitrageBacktester:
-    def __init__(self, data_folder="data", symbols=None,
+    def __init__(self, symbols, access_token=None,
+                 lookback_days=30, timeframe="5min",
                  basis_lookback=50, entry_zscore_threshold=2.0,
                  exit_zscore_threshold=0.5, stop_loss_pct=1.0,
                  initial_capital=100000, square_off_time="15:20",
-                 min_data_points=100, lot_size=1):
+                 lot_size=1):
         """
-        Spot-Futures Arbitrage Strategy Backtester
+        Spot-Futures Arbitrage Strategy Backtester using Fyers API
 
         Strategy Logic:
         - Calculate basis = futures_price - spot_price
@@ -58,30 +62,46 @@ class SpotFuturesArbitrageBacktester:
         - EXIT: |z-score| < exit_threshold (basis converged to mean)
 
         Parameters:
+        - symbols: List of dicts with 'spot', 'futures', 'base_name' keys
+        - access_token: Fyers API access token (or set FYERS_ACCESS_TOKEN env var)
+        - lookback_days: Number of days of historical data to fetch (default 30)
+        - timeframe: Candle timeframe - "1", "5", "15", "30", "60", "D" (default "5min")
         - basis_lookback: Period for calculating basis mean and std dev (default 50)
         - entry_zscore_threshold: Z-score threshold for entry (default 2.0)
         - exit_zscore_threshold: Z-score threshold for exit (default 0.5)
         - stop_loss_pct: Stop loss on total position value (default 1%)
         - lot_size: Futures lot size multiplier (default 1)
         """
-        self.data_folder = data_folder
-        self.db_files = self.find_database_files()
+
+        # Fyers API setup
+        if access_token is None:
+            access_token = os.getenv('FYERS_ACCESS_TOKEN')
+            if not access_token:
+                raise ValueError("Access token required. Set FYERS_ACCESS_TOKEN env var or pass access_token parameter")
+
+        self.fyers = fyersModel.FyersModel(client_id="", token=access_token, log_path="")
+
+        self.symbol_pairs = symbols
+        self.lookback_days = lookback_days
+        self.timeframe = timeframe
         self.basis_lookback = basis_lookback
         self.entry_zscore_threshold = entry_zscore_threshold
         self.exit_zscore_threshold = exit_zscore_threshold
         self.stop_loss_pct = stop_loss_pct / 100
         self.initial_capital = initial_capital
         self.square_off_time = self.parse_square_off_time(square_off_time)
-        self.min_data_points = min_data_points
         self.lot_size = lot_size
         self.results = {}
 
         self.ist_tz = pytz.timezone('Asia/Kolkata')
 
         print("=" * 100)
-        print("SPOT-FUTURES ARBITRAGE STRATEGY BACKTESTER")
+        print("SPOT-FUTURES ARBITRAGE STRATEGY BACKTESTER (FYERS API)")
         print("=" * 100)
         print(f"Strategy: Market-Neutral Basis Trading")
+        print(f"Data Source: Fyers API")
+        print(f"Lookback Period: {lookback_days} days")
+        print(f"Timeframe: {timeframe}")
         print(f"Basis Lookback: {basis_lookback} periods")
         print(f"Entry Z-Score Threshold: ±{entry_zscore_threshold}")
         print(f"Exit Z-Score Threshold: ±{exit_zscore_threshold}")
@@ -89,13 +109,6 @@ class SpotFuturesArbitrageBacktester:
         print(f"Square-off Time: {square_off_time} IST")
         print(f"Lot Size: {lot_size}")
         print("=" * 100)
-
-        # Auto-detect spot-futures pairs
-        if symbols is None:
-            print("\nAuto-detecting spot-futures pairs...")
-            self.symbol_pairs = self.auto_detect_spot_futures_pairs()
-        else:
-            self.symbol_pairs = symbols
 
         print(f"\nSpot-Futures Pairs to backtest: {len(self.symbol_pairs)}")
         for pair in self.symbol_pairs:
@@ -109,133 +122,106 @@ class SpotFuturesArbitrageBacktester:
         except:
             return time(15, 20)
 
-    def find_database_files(self):
-        """Find database files"""
-        if not os.path.exists(self.data_folder):
-            return []
-        db_files = glob.glob(os.path.join(self.data_folder, "*.db"))
-        return sorted(db_files)
+    def fetch_historical_data(self, symbol, days=None):
+        """
+        Fetch historical data from Fyers API
 
-    def auto_detect_spot_futures_pairs(self):
-        """Auto-detect spot and futures symbol pairs from databases"""
-        all_symbols = set()
+        Args:
+            symbol: Fyers symbol (e.g., "NSE:RELIANCE-EQ", "NSE:RELIANCE25JAN")
+            days: Number of days to fetch (overrides self.lookback_days)
 
-        # Collect all symbols
-        for db_file in self.db_files:
-            try:
-                conn = sqlite3.connect(db_file)
-                query = """
-                SELECT DISTINCT symbol 
-                FROM market_data 
-                WHERE symbol LIKE '%NSE:%'
-                """
-                symbols_df = pd.read_sql_query(query, conn)
-                conn.close()
+        Returns:
+            DataFrame with OHLCV data
+        """
+        if days is None:
+            days = self.lookback_days
 
-                for symbol in symbols_df['symbol']:
-                    all_symbols.add(symbol)
-            except:
-                continue
+        print(f"    Fetching {days} days of {self.timeframe} data for {symbol}...")
 
-        # Match spot and futures pairs
-        pairs = []
-        spot_symbols = [s for s in all_symbols if s.endswith('-EQ')]
+        # Calculate date range
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
 
-        for spot in spot_symbols:
-            # Extract base symbol name
-            # Format: NSE:SYMBOL-EQ -> SYMBOL
-            base_name = spot.split(':')[1].replace('-EQ', '') if ':' in spot else spot.replace('-EQ', '')
+        # Convert to Unix timestamps
+        range_from = start_date.strftime("%Y-%m-%d")
+        range_to = end_date.strftime("%Y-%m-%d")
 
-            # Look for corresponding futures
-            # Format: NSE:SYMBOLFUT or NSE:SYMBOL-FUT or NSE:SYMBOLYYMM
-            possible_futures = [
-                f"NSE:{base_name}FUT",
-                f"NSE:{base_name}-FUT",
-                f"NSE:{base_name}24DEC",  # Current month
-                f"NSE:{base_name}25JAN",  # Next month
-            ]
+        # Map timeframe to Fyers format
+        timeframe_map = {
+            "1": "1",  # 1 minute
+            "5": "5",  # 5 minutes
+            "15": "15",  # 15 minutes
+            "30": "30",  # 30 minutes
+            "60": "60",  # 1 hour
+            "D": "D",  # Daily
+            "1min": "1",
+            "5min": "5",
+            "15min": "15",
+            "30min": "30",
+            "1H": "60",
+            "1D": "D"
+        }
 
-            for futures in possible_futures:
-                if futures in all_symbols:
-                    pairs.append({
-                        'spot': spot,
-                        'futures': futures,
-                        'base_name': base_name
-                    })
-                    break  # Take first match
+        fyers_timeframe = timeframe_map.get(self.timeframe, "5")
 
-        # Filter pairs with sufficient data
-        valid_pairs = []
-        for pair in pairs:
-            spot_count = self.count_symbol_data(pair['spot'])
-            futures_count = self.count_symbol_data(pair['futures'])
+        try:
+            data = {
+                "symbol": symbol,
+                "resolution": fyers_timeframe,
+                "date_format": "1",  # Unix timestamp
+                "range_from": range_from,
+                "range_to": range_to,
+                "cont_flag": "1"
+            }
 
-            if spot_count >= self.min_data_points and futures_count >= self.min_data_points:
-                valid_pairs.append(pair)
+            response = self.fyers.history(data=data)
 
-        return valid_pairs
+            if response['s'] != 'ok':
+                print(f"      Error fetching data: {response.get('message', 'Unknown error')}")
+                return None
 
-    def count_symbol_data(self, symbol):
-        """Count data points for a symbol"""
-        total_count = 0
-        for db_file in self.db_files:
-            try:
-                conn = sqlite3.connect(db_file)
-                query = "SELECT COUNT(*) FROM market_data WHERE symbol = ?"
-                result = pd.read_sql_query(query, conn, params=(symbol,))
-                conn.close()
-                total_count += result.iloc[0, 0]
-            except:
-                continue
-        return total_count
+            # Convert to DataFrame
+            candles = response.get('candles', [])
+            if not candles:
+                print(f"      No data returned for {symbol}")
+                return None
+
+            df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+            # Convert timestamp to datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+            df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(self.ist_tz)
+            df = df.set_index('timestamp')
+
+            print(f"      Fetched {len(df)} candles from {df.index[0]} to {df.index[-1]}")
+
+            return df[['close']]
+
+        except Exception as e:
+            print(f"      Error fetching data for {symbol}: {e}")
+            return None
 
     def load_spot_futures_data(self, spot_symbol, futures_symbol):
-        """Load data for both spot and futures"""
-        print(f"\n  Loading data for {spot_symbol} and {futures_symbol}...")
+        """Load data for both spot and futures from Fyers API"""
+        print(f"\n  Loading data from Fyers API...")
+        print(f"  Spot: {spot_symbol}")
 
-        spot_data = self.load_symbol_data(spot_symbol)
-        futures_data = self.load_symbol_data(futures_symbol)
+        spot_data = self.fetch_historical_data(spot_symbol)
 
-        if spot_data is None or futures_data is None:
+        if spot_data is None:
+            print(f"  Failed to load spot data for {spot_symbol}")
+            return None, None
+
+        print(f"  Futures: {futures_symbol}")
+        futures_data = self.fetch_historical_data(futures_symbol)
+
+        if futures_data is None:
+            print(f"  Failed to load futures data for {futures_symbol}")
             return None, None
 
         print(f"  Spot: {len(spot_data)} records | Futures: {len(futures_data)} records")
 
         return spot_data, futures_data
-
-    def load_symbol_data(self, symbol):
-        """Load data for a single symbol from all databases"""
-        combined_df = pd.DataFrame()
-
-        for db_file in self.db_files:
-            try:
-                conn = sqlite3.connect(db_file)
-                query = """
-                SELECT timestamp, ltp, close_price, high_price, low_price, volume
-                FROM market_data 
-                WHERE symbol = ? 
-                ORDER BY timestamp
-                """
-                df = pd.read_sql_query(query, conn, params=(symbol,))
-                conn.close()
-
-                if not df.empty:
-                    combined_df = pd.concat([combined_df, df], ignore_index=True)
-            except:
-                continue
-
-        if combined_df.empty:
-            return None
-
-        # Process data
-        combined_df['timestamp'] = pd.to_datetime(combined_df['timestamp'])
-        combined_df = combined_df.set_index('timestamp')
-        combined_df['close'] = combined_df['close_price'].fillna(combined_df['ltp'])
-        combined_df = combined_df.dropna(subset=['close'])
-        combined_df = combined_df.sort_index()
-        combined_df = combined_df[~combined_df.index.duplicated(keep='first')]
-
-        return combined_df[['close']]
 
     def align_spot_futures_data(self, spot_data, futures_data):
         """Align spot and futures data on common timestamps"""
@@ -321,14 +307,14 @@ class SpotFuturesArbitrageBacktester:
         spot_data, futures_data = self.load_spot_futures_data(spot_symbol, futures_symbol)
 
         if spot_data is None or futures_data is None:
-            print(f" Insufficient data for {base_name}")
+            print(f"  Insufficient data for {base_name}")
             return None
 
         # Align timestamps
         df = self.align_spot_futures_data(spot_data, futures_data)
 
         if len(df) < self.basis_lookback * 2:
-            print(f" Insufficient aligned data for {base_name}")
+            print(f"  Insufficient aligned data for {base_name}")
             return None
 
         # Calculate basis statistics
@@ -419,7 +405,7 @@ class SpotFuturesArbitrageBacktester:
                     entry_z_score = current_z_score
                     entry_time = current_time
 
-                    print(f"\n LONG FUTURES + SHORT SPOT")
+                    print(f"\n  LONG FUTURES + SHORT SPOT")
                     print(f"   Time: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                     print(f"   Spot: ₹{spot_price:.2f} | Futures: ₹{futures_price:.2f}")
                     print(f"   Basis: ₹{current_basis:.2f} ({(current_basis / spot_price) * 100:.3f}%)")
@@ -434,7 +420,7 @@ class SpotFuturesArbitrageBacktester:
                     entry_z_score = current_z_score
                     entry_time = current_time
 
-                    print(f"\n SHORT FUTURES + LONG SPOT")
+                    print(f"\n  SHORT FUTURES + LONG SPOT")
                     print(f"   Time: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                     print(f"   Spot: ₹{spot_price:.2f} | Futures: ₹{futures_price:.2f}")
                     print(f"   Basis: ₹{current_basis:.2f} ({(current_basis / spot_price) * 100:.3f}%)")
@@ -513,7 +499,7 @@ class SpotFuturesArbitrageBacktester:
 
     def print_trade(self, trade: ArbitrageTrade):
         """Print trade details"""
-        print(f"\n ARBITRAGE TRADE CLOSED")
+        print(f"\n  ARBITRAGE TRADE CLOSED")
         print(f"   Position: {trade.position_type.replace('_', ' ').upper()}")
         print(f"   Entry:  {trade.entry_time.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"   Exit:   {trade.exit_time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -531,9 +517,9 @@ class SpotFuturesArbitrageBacktester:
         print(f"   Exit Reason:     {trade.exit_reason}")
 
         if trade.total_pnl > 0:
-            print(f"   Result: PROFIT")
+            print(f"   Result: ✓ PROFIT")
         else:
-            print(f"   Result: LOSS")
+            print(f"   Result: ✗ LOSS")
 
     def calculate_metrics(self, trades: List[ArbitrageTrade], df):
         """Calculate performance metrics"""
@@ -607,7 +593,7 @@ class SpotFuturesArbitrageBacktester:
                 if result:
                     self.results[pair['base_name']] = result
             except Exception as e:
-                print(f"Error with {pair['base_name']}: {e}")
+                print(f"\n✗ Error with {pair['base_name']}: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -673,16 +659,17 @@ class SpotFuturesArbitrageBacktester:
             print(f"  Square-off:        {square_off} ({(square_off / total_trades) * 100:.1f}%)")
 
         # Best and worst pairs
-        best_pair = max(self.results.items(), key=lambda x: x[1]['final_capital'])
-        worst_pair = min(self.results.items(), key=lambda x: x[1]['final_capital'])
+        if self.results:
+            best_pair = max(self.results.items(), key=lambda x: x[1]['final_capital'])
+            worst_pair = min(self.results.items(), key=lambda x: x[1]['final_capital'])
 
-        print(f"\n Best Pair:  {best_pair[0]}")
-        print(f"   Return: {((best_pair[1]['final_capital'] - self.initial_capital) / self.initial_capital) * 100:+.2f}%")
-        print(f"   Trades: {best_pair[1]['metrics']['total_trades']}")
+            print(f"\n Best Pair:  {best_pair[0]}")
+            print(f"   Return: {((best_pair[1]['final_capital'] - self.initial_capital) / self.initial_capital) * 100:+.2f}%")
+            print(f"   Trades: {best_pair[1]['metrics']['total_trades']}")
 
-        print(f"\n Worst Pair: {worst_pair[0]}")
-        print(f"   Return: {((worst_pair[1]['final_capital'] - self.initial_capital) / self.initial_capital) * 100:+.2f}%")
-        print(f"   Trades: {worst_pair[1]['metrics']['total_trades']}")
+            print(f"\n Worst Pair: {worst_pair[0]}")
+            print(f"   Return: {((worst_pair[1]['final_capital'] - self.initial_capital) / self.initial_capital) * 100:+.2f}%")
+            print(f"   Trades: {worst_pair[1]['metrics']['total_trades']}")
 
         print(f"{'=' * 100}")
 
@@ -761,7 +748,7 @@ class SpotFuturesArbitrageBacktester:
 # Main execution
 if __name__ == "__main__":
     """
-    SPOT-FUTURES ARBITRAGE STRATEGY
+    SPOT-FUTURES ARBITRAGE STRATEGY (FYERS API)
 
     Market-Neutral Strategy that profits from basis (spread) convergence
 
@@ -778,20 +765,47 @@ if __name__ == "__main__":
     - Market-neutral (hedged position)
     - Lower risk than directional strategies
     - Profits from basis convergence, not price movement
+
+    Setup:
+    - Set FYERS_ACCESS_TOKEN environment variable
+    - Or pass access_token parameter to backtester
     """
 
+    # Example symbol pairs (adjust based on available Fyers symbols)
+    symbol_pairs = [
+        # {
+        #     'spot': 'NSE:RELIANCE-EQ',
+        #     'futures': 'NSE:RELIANCE25DECFUT',  # Adjust month as needed
+        #     'base_name': 'RELIANCE'
+        # },
+        # {
+        #     'spot': 'NSE:HDFCBANK-EQ',
+        #     'futures': 'NSE:HDFCBANK25DECFUT',
+        #     'base_name': 'HDFCBANK'
+        # },
+        # {
+        #     'spot': 'NSE:INFY-EQ',
+        #     'futures': 'NSE:INFY25DECFUT',
+        #     'base_name': 'INFY'
+        # },
+        {
+            'spot': 'NSE:TCS-EQ',
+            'futures': 'NSE:TCS25DECFUT',
+            'base_name': 'TCS'
+        }
+    ]
+
+    # Initialize backtester
     backtester = SpotFuturesArbitrageBacktester(
-        data_folder="data",
-        symbols=[
-            {'spot': 'RELIANCE', 'futures': 'RELIANCE_FUT', 'base_name': 'RELIANCE'},
-            {'spot': 'HDFCBANK', 'futures': 'HDFCBANK_FUT', 'base_name': 'HDFCBANK'},
-            {'spot': 'INFY', 'futures': 'INFY_FUT', 'base_name': 'INFY'}
-        ],  # Auto-detect spot-futures pairs
+        symbols=symbol_pairs,
+        access_token=None,  # Will use FYERS_ACCESS_TOKEN env var
+        lookback_days=60,  # 7 days of historical data
+        timeframe="1min",  # 5-minute candles
         basis_lookback=50,  # 50-period lookback for basis statistics
         entry_zscore_threshold=2.0,  # Enter when z-score > 2 or < -2
         exit_zscore_threshold=0.5,  # Exit when |z-score| < 0.5
-        stop_loss_pct=10.0,  # 1% stop loss on total position
-        initial_capital=100000,
+        stop_loss_pct=1.0,  # 1% stop loss on total position
+        initial_capital=200000,
         square_off_time="15:20",
         lot_size=1  # Adjust for actual futures lot size
     )
@@ -802,5 +816,5 @@ if __name__ == "__main__":
     # Export results
     if results:
         backtester.export_results()
-        print(f"\n Backtest Complete!")
+        print(f"\nBacktest Complete!")
         print(f"Tested {len(results)} spot-futures pairs")
