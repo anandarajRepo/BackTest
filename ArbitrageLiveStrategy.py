@@ -1,13 +1,16 @@
-import sqlite3
 import pandas as pd
 import numpy as np
-import glob
 import os
 from datetime import datetime, time, timedelta
 import pytz
 import warnings
 from dataclasses import dataclass
 from typing import List, Dict, Optional
+from fyers_apiv3 import fyersModel
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 warnings.filterwarnings('ignore')
 
@@ -51,9 +54,13 @@ class LiveStrategyBacktester:
     """
     Backtest implementation of the LIVE FyersArbitrage strategy logic
     Implements exact logic from arbitrage_strategy.py
+    Uses Fyers API for historical data instead of database files
     """
 
-    def __init__(self, data_folder="data", symbols=None,
+    def __init__(self, symbols, access_token=None,
+                 # Data parameters
+                 lookback_days=30,
+                 timeframe="5min",
                  # Live strategy parameters
                  portfolio_value=100000,
                  risk_per_trade_pct=2.0,
@@ -66,11 +73,18 @@ class LiveStrategyBacktester:
                  min_liquidity_ratio=1.5,
                  require_convergence_trend=False,
                  square_off_time="15:15",
-                 basis_lookback=50,  # For z-score calculation
-                 min_data_points=100,
+                 basis_lookback=50,
                  lot_size=1,
-                 risk_free_rate=0.05):  # 5% annual risk-free rate
+                 risk_free_rate=0.05):
         """
+        Live Strategy Backtester using Fyers API
+
+        Parameters:
+        - symbols: List of dicts with 'spot', 'futures', 'base_name' keys
+        - access_token: Fyers API access token (or set FYERS_ACCESS_TOKEN env var)
+        - lookback_days: Number of days of historical data to fetch (default 30)
+        - timeframe: Candle timeframe - "1", "5", "15", "30", "60", "D" (default "5min")
+
         Live Strategy Parameters (from ArbitrageStrategyConfig):
         - portfolio_value: Total capital (default: ₹1 lakh)
         - risk_per_trade_pct: Risk per trade (default: 2%)
@@ -83,8 +97,18 @@ class LiveStrategyBacktester:
         - min_liquidity_ratio: Min volume ratio for entry (default: 1.5)
         - require_convergence_trend: Require converging spread (default: False)
         """
-        self.data_folder = data_folder
-        self.db_files = self.find_database_files()
+
+        # Fyers API setup
+        if access_token is None:
+            access_token = os.getenv('FYERS_ACCESS_TOKEN')
+            if not access_token:
+                raise ValueError("Access token required. Set FYERS_ACCESS_TOKEN env var or pass access_token parameter")
+
+        self.fyers = fyersModel.FyersModel(client_id="", token=access_token, log_path="")
+
+        self.symbol_pairs = symbols
+        self.lookback_days = lookback_days
+        self.timeframe = timeframe
 
         # Live strategy parameters
         self.portfolio_value = portfolio_value
@@ -102,16 +126,18 @@ class LiveStrategyBacktester:
 
         # Supporting parameters
         self.basis_lookback = basis_lookback
-        self.min_data_points = min_data_points
         self.lot_size = lot_size
         self.results = {}
 
         self.ist_tz = pytz.timezone('Asia/Kolkata')
 
         print("=" * 100)
-        print("LIVE STRATEGY BACKTEST - EXACT LOGIC FROM FyersArbitrage")
+        print("LIVE STRATEGY BACKTEST - EXACT LOGIC FROM FyersArbitrage (FYERS API)")
         print("=" * 100)
         print(f"Strategy: Fair Value Mispricing + Multi-Factor Confidence")
+        print(f"Data Source: Fyers API")
+        print(f"Lookback Period: {lookback_days} days")
+        print(f"Timeframe: {timeframe}")
         print(f"")
         print(f"ENTRY LOGIC:")
         print(f"  - Fair Value Premium: (Risk-free rate × Days to expiry) / 365")
@@ -135,13 +161,6 @@ class LiveStrategyBacktester:
         print(f"  - Position Sizing: Risk-based (not fixed %)")
         print("=" * 100)
 
-        # Auto-detect spot-futures pairs
-        if symbols is None:
-            print("\nAuto-detecting spot-futures pairs...")
-            self.symbol_pairs = self.auto_detect_spot_futures_pairs()
-        else:
-            self.symbol_pairs = symbols
-
         print(f"\nSpot-Futures Pairs to backtest: {len(self.symbol_pairs)}")
         for pair in self.symbol_pairs:
             print(f"  - {pair['spot']} <-> {pair['futures']}")
@@ -154,125 +173,106 @@ class LiveStrategyBacktester:
         except:
             return time(15, 15)
 
-    def find_database_files(self):
-        """Find database files"""
-        if not os.path.exists(self.data_folder):
-            return []
-        db_files = glob.glob(os.path.join(self.data_folder, "*.db"))
-        return sorted(db_files)
+    def fetch_historical_data(self, symbol, days=None):
+        """
+        Fetch historical data from Fyers API
 
-    def auto_detect_spot_futures_pairs(self):
-        """Auto-detect spot and futures symbol pairs from databases"""
-        all_symbols = set()
+        Args:
+            symbol: Fyers symbol (e.g., "NSE:RELIANCE-EQ", "NSE:RELIANCE25DECFUT")
+            days: Number of days to fetch (overrides self.lookback_days)
 
-        for db_file in self.db_files:
-            try:
-                conn = sqlite3.connect(db_file)
-                query = """
-                SELECT DISTINCT symbol 
-                FROM market_data 
-                WHERE symbol LIKE '%NSE:%'
-                """
-                symbols_df = pd.read_sql_query(query, conn)
-                conn.close()
+        Returns:
+            DataFrame with OHLCV data
+        """
+        if days is None:
+            days = self.lookback_days
 
-                for symbol in symbols_df['symbol']:
-                    all_symbols.add(symbol)
-            except:
-                continue
+        print(f"    Fetching {days} days of {self.timeframe} data for {symbol}...")
 
-        pairs = []
-        spot_symbols = [s for s in all_symbols if s.endswith('-EQ')]
+        # Calculate date range
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
 
-        for spot in spot_symbols:
-            base_name = spot.split(':')[1].replace('-EQ', '') if ':' in spot else spot.replace('-EQ', '')
+        # Convert to date strings
+        range_from = start_date.strftime("%Y-%m-%d")
+        range_to = end_date.strftime("%Y-%m-%d")
 
-            possible_futures = [
-                f"NSE:{base_name}FUT",
-                f"NSE:{base_name}-FUT",
-                f"NSE:{base_name}24DEC",
-                f"NSE:{base_name}25JAN",
-            ]
+        # Map timeframe to Fyers format
+        timeframe_map = {
+            "1": "1",  # 1 minute
+            "5": "5",  # 5 minutes
+            "15": "15",  # 15 minutes
+            "30": "30",  # 30 minutes
+            "60": "60",  # 1 hour
+            "D": "D",  # Daily
+            "1min": "1",
+            "5min": "5",
+            "15min": "15",
+            "30min": "30",
+            "1H": "60",
+            "1D": "D"
+        }
 
-            for futures in possible_futures:
-                if futures in all_symbols:
-                    pairs.append({
-                        'spot': spot,
-                        'futures': futures,
-                        'base_name': base_name
-                    })
-                    break
+        fyers_timeframe = timeframe_map.get(self.timeframe, "5")
 
-        valid_pairs = []
-        for pair in pairs:
-            spot_count = self.count_symbol_data(pair['spot'])
-            futures_count = self.count_symbol_data(pair['futures'])
+        try:
+            data = {
+                "symbol": symbol,
+                "resolution": fyers_timeframe,
+                "date_format": "1",  # Unix timestamp
+                "range_from": range_from,
+                "range_to": range_to,
+                "cont_flag": "1"
+            }
 
-            if spot_count >= self.min_data_points and futures_count >= self.min_data_points:
-                valid_pairs.append(pair)
+            response = self.fyers.history(data=data)
 
-        return valid_pairs
+            if response['s'] != 'ok':
+                print(f"      Error fetching data: {response.get('message', 'Unknown error')}")
+                return None
 
-    def count_symbol_data(self, symbol):
-        """Count data points for a symbol"""
-        total_count = 0
-        for db_file in self.db_files:
-            try:
-                conn = sqlite3.connect(db_file)
-                query = "SELECT COUNT(*) FROM market_data WHERE symbol = ?"
-                result = pd.read_sql_query(query, conn, params=(symbol,))
-                conn.close()
-                total_count += result.iloc[0, 0]
-            except:
-                continue
-        return total_count
+            # Convert to DataFrame
+            candles = response.get('candles', [])
+            if not candles:
+                print(f"      No data returned for {symbol}")
+                return None
+
+            df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+            # Convert timestamp to datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+            df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(self.ist_tz)
+            df = df.set_index('timestamp')
+
+            print(f"      Fetched {len(df)} candles from {df.index[0]} to {df.index[-1]}")
+
+            return df[['close', 'volume']]
+
+        except Exception as e:
+            print(f"      Error fetching data for {symbol}: {e}")
+            return None
 
     def load_spot_futures_data(self, spot_symbol, futures_symbol):
-        """Load data for both spot and futures"""
-        print(f"\n  Loading data for {spot_symbol} and {futures_symbol}...")
+        """Load data for both spot and futures from Fyers API"""
+        print(f"\n  Loading data from Fyers API...")
+        print(f"  Spot: {spot_symbol}")
 
-        spot_data = self.load_symbol_data(spot_symbol)
-        futures_data = self.load_symbol_data(futures_symbol)
+        spot_data = self.fetch_historical_data(spot_symbol)
 
-        if spot_data is None or futures_data is None:
+        if spot_data is None:
+            print(f"  Failed to load spot data for {spot_symbol}")
+            return None, None
+
+        print(f"  Futures: {futures_symbol}")
+        futures_data = self.fetch_historical_data(futures_symbol)
+
+        if futures_data is None:
+            print(f"  Failed to load futures data for {futures_symbol}")
             return None, None
 
         print(f"  Spot: {len(spot_data)} records | Futures: {len(futures_data)} records")
 
         return spot_data, futures_data
-
-    def load_symbol_data(self, symbol):
-        """Load data for a single symbol from all databases"""
-        combined_df = pd.DataFrame()
-
-        for db_file in self.db_files:
-            try:
-                conn = sqlite3.connect(db_file)
-                query = """
-                SELECT timestamp, ltp, close_price, high_price, low_price, volume
-                FROM market_data 
-                WHERE symbol = ? 
-                ORDER BY timestamp
-                """
-                df = pd.read_sql_query(query, conn, params=(symbol,))
-                conn.close()
-
-                if not df.empty:
-                    combined_df = pd.concat([combined_df, df], ignore_index=True)
-            except:
-                continue
-
-        if combined_df.empty:
-            return None
-
-        combined_df['timestamp'] = pd.to_datetime(combined_df['timestamp'])
-        combined_df = combined_df.set_index('timestamp')
-        combined_df['close'] = combined_df['close_price'].fillna(combined_df['ltp'])
-        combined_df = combined_df.dropna(subset=['close'])
-        combined_df = combined_df.sort_index()
-        combined_df = combined_df[~combined_df.index.duplicated(keep='first')]
-
-        return combined_df
 
     def align_spot_futures_data(self, spot_data, futures_data):
         """Align spot and futures data on common timestamps"""
@@ -461,7 +461,7 @@ class LiveStrategyBacktester:
         print(f"Spot: {spot_symbol} | Futures: {futures_symbol}")
         print(f"{'=' * 100}")
 
-        # Load data
+        # Load data from Fyers API
         spot_data, futures_data = self.load_spot_futures_data(spot_symbol, futures_symbol)
 
         if spot_data is None or futures_data is None:
@@ -928,7 +928,7 @@ class LiveStrategyBacktester:
 
         print(f"{'=' * 100}")
 
-    def export_results(self, filename_prefix="live_strategy"):
+    def export_results(self, filename_prefix="live_strategy_fyers"):
         """Export results to CSV"""
         if not self.results:
             print("No results to export.")
@@ -1014,7 +1014,7 @@ class LiveStrategyBacktester:
 # Main execution
 if __name__ == "__main__":
     """
-    LIVE STRATEGY BACKTEST
+    LIVE STRATEGY BACKTEST WITH FYERS API
 
     Tests the EXACT logic from FyersArbitrage live strategy:
     - Fair value premium calculation (cost of carry)
@@ -1022,11 +1022,41 @@ if __name__ == "__main__":
     - Multi-factor confidence scoring
     - Risk-based position sizing
     - Fixed profit target (0.3%) and stop loss (0.5%)
+
+    Now fetches data from Fyers API instead of database files
     """
 
+    # Example symbol pairs (adjust based on available Fyers symbols)
+    symbol_pairs = [
+        {
+            'spot': 'NSE:RELIANCE-EQ',
+            'futures': 'NSE:RELIANCE25DECFUT',  # Adjust month as needed
+            'base_name': 'RELIANCE'
+        },
+        {
+            'spot': 'NSE:HDFCBANK-EQ',
+            'futures': 'NSE:HDFCBANK25DECFUT',
+            'base_name': 'HDFCBANK'
+        },
+        {
+            'spot': 'NSE:INFY-EQ',
+            'futures': 'NSE:INFY25DECFUT',
+            'base_name': 'INFY'
+        },
+        {
+            'spot': 'NSE:TCS-EQ',
+            'futures': 'NSE:TCS25DECFUT',
+            'base_name': 'TCS'
+        }
+    ]
+
     backtester = LiveStrategyBacktester(
-        data_folder="data",
-        symbols=None,  # Auto-detect
+        symbols=symbol_pairs,
+        access_token=None,  # Will use FYERS_ACCESS_TOKEN env var
+
+        # Data parameters
+        lookback_days=60,  # 60 days of historical data
+        timeframe="5min",  # 5-minute candles
 
         # Live strategy parameters (from config/settings.py)
         portfolio_value=100000,
@@ -1058,4 +1088,4 @@ if __name__ == "__main__":
     if results:
         backtester.export_results()
         print(f"\n✓ Live Strategy Backtest Complete!")
-        print(f"Tested {len(results)} spot-futures pairs with LIVE strategy logic")
+        print(f"Tested {len(results)} spot-futures pairs with LIVE strategy logic using Fyers API")
