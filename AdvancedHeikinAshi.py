@@ -17,7 +17,7 @@ class AdvancedHeikinAshiBacktester:
                  volume_percentile=60, atr_period=14, atr_multiplier=2.0,
                  breakeven_profit_pct=1.0, consecutive_candles=2,
                  initial_capital=100000, square_off_time="15:20",
-                 min_data_points=100):
+                 min_data_points=100, tick_interval=None):
         """
         Advanced Heikin Ashi Strategy with Multi-Indicator Confirmation
 
@@ -51,6 +51,8 @@ class AdvancedHeikinAshiBacktester:
         - initial_capital: Starting capital per symbol
         - square_off_time: Time to square off (HH:MM format)
         - min_data_points: Minimum data points per symbol
+        - tick_interval: Time interval for resampling tick data (e.g., '5s', '10s', '30s', '1min', '5min')
+                        None = use raw tick data without resampling
         """
         self.data_folder = data_folder
         self.db_files = self.find_database_files()
@@ -65,6 +67,7 @@ class AdvancedHeikinAshiBacktester:
         self.initial_capital = initial_capital
         self.square_off_time = self.parse_square_off_time(square_off_time)
         self.min_data_points = min_data_points
+        self.tick_interval = tick_interval
         self.results = {}
         self.combined_data = {}
 
@@ -75,6 +78,7 @@ class AdvancedHeikinAshiBacktester:
         print(f"ADVANCED HEIKIN ASHI STRATEGY - Multi-Indicator Confirmation")
         print(f"{'='*100}")
         print(f"Strategy Parameters:")
+        print(f"  Tick Interval: {self.tick_interval if self.tick_interval else 'Raw tick data (no resampling)'}")
         print(f"  HA Smoothing Period: {self.ha_smoothing}")
         print(f"  ADX Period: {self.adx_period}, Threshold: {self.adx_threshold}")
         print(f"  Volume Percentile: {self.volume_percentile}%")
@@ -172,6 +176,10 @@ class AdvancedHeikinAshiBacktester:
         combined_df = combined_df.sort_index()
         combined_df = combined_df[~combined_df.index.duplicated(keep='first')]
 
+        # Resample tick data to specified interval if tick_interval is set
+        if self.tick_interval is not None:
+            combined_df = self.resample_tick_data(combined_df, self.tick_interval)
+
         return combined_df
 
     def load_data_from_single_db(self, db_path, symbol):
@@ -236,6 +244,46 @@ class AdvancedHeikinAshiBacktester:
 
         except Exception as e:
             return None
+
+    def resample_tick_data(self, df, interval):
+        """
+        Resample tick data to specified time interval
+
+        Parameters:
+        -----------
+        df: DataFrame with tick data (must have timestamp index and OHLCV columns)
+        interval: Time interval string (e.g., '5s', '10s', '30s', '1min', '5min')
+
+        Returns:
+        --------
+        DataFrame resampled to specified interval with proper OHLCV aggregation
+        """
+        if df is None or df.empty:
+            return df
+
+        # Ensure we have a datetime index
+        if not isinstance(df.index, pd.DatetimeIndex):
+            return df
+
+        # Resample using standard OHLCV aggregation
+        resampled = df.resample(interval).agg({
+            'open': 'first',    # First price in interval
+            'high': 'max',      # Highest price in interval
+            'low': 'min',       # Lowest price in interval
+            'close': 'last',    # Last price in interval
+            'volume': 'sum'     # Total volume in interval
+        })
+
+        # Remove rows with no data (NaN close prices)
+        resampled = resampled.dropna(subset=['close'])
+
+        # Forward fill any remaining NaN values in open/high/low
+        resampled['open'] = resampled['open'].fillna(resampled['close'])
+        resampled['high'] = resampled['high'].fillna(resampled['close'])
+        resampled['low'] = resampled['low'].fillna(resampled['close'])
+        resampled['volume'] = resampled['volume'].fillna(0)
+
+        return resampled
 
     def calculate_heikin_ashi(self, df):
         """Calculate Heikin Ashi candles with EMA smoothing"""
@@ -669,7 +717,8 @@ if __name__ == "__main__":
         breakeven_profit_pct=1.0,  # Move to breakeven at 1% profit
         consecutive_candles=2,  # Require 2 consecutive bullish candles
         initial_capital=100000,
-        square_off_time="15:20"
+        square_off_time="15:20",
+        tick_interval=None  # Options: None (raw ticks), '5s', '10s', '30s', '1min', '5min', etc.
     )
 
     backtester.run_backtest()
