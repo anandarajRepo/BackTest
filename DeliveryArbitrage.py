@@ -17,8 +17,8 @@ warnings.filterwarnings('ignore')
 
 
 @dataclass
-class ArbitrageTrade:
-    """Data class to store arbitrage trade information"""
+class DeliveryArbitrageTrade:
+    """Data class to store delivery arbitrage trade information"""
     entry_time: datetime
     exit_time: datetime
     symbol_spot: str
@@ -37,21 +37,23 @@ class ArbitrageTrade:
     quantity: int
     spot_pnl: float
     futures_pnl: float
+    funding_cost: float  # Overnight holding cost
     total_pnl: float
     total_pnl_pct: float
     exit_reason: str
-    holding_period_minutes: float
+    holding_period_days: float
+    num_overnight_holds: int
 
 
-class SpotFuturesArbitrageBacktester:
+class DeliveryArbitrageBacktester:
     def __init__(self, symbols, access_token=None,
-                 lookback_days=30, timeframe="5min",
+                 lookback_days=90, timeframe="D",
                  basis_lookback=50, entry_zscore_threshold=2.0,
-                 exit_zscore_threshold=0.5, stop_loss_pct=1.0,
-                 initial_capital=100000, square_off_time="15:20",
-                 lot_size=1):
+                 exit_zscore_threshold=0.5, stop_loss_pct=2.0,
+                 max_holding_days=25, funding_rate_daily=0.02,
+                 initial_capital=200000, lot_size=1):
         """
-        Spot-Futures Arbitrage Strategy Backtester using Fyers API
+        Delivery Spot-Futures Arbitrage Strategy Backtester using Fyers API
 
         Strategy Logic:
         - Calculate basis = futures_price - spot_price
@@ -60,16 +62,20 @@ class SpotFuturesArbitrageBacktester:
         - ENTRY LONG FUTURES + SHORT SPOT: z-score < -entry_threshold (futures underpriced)
         - ENTRY SHORT FUTURES + LONG SPOT: z-score > +entry_threshold (futures overpriced)
         - EXIT: |z-score| < exit_threshold (basis converged to mean)
+        - NO INTRADAY SQUARE-OFF: Positions held across days
+        - LOWER BROKERAGE: Delivery trades have lower transaction costs
 
         Parameters:
-        - symbols: List of dicts with 'spot', 'futures', 'base_name' keys
+        - symbols: List of dicts with 'spot', 'futures', 'base_name', 'expiry_date' keys
         - access_token: Fyers API access token (or set FYERS_ACCESS_TOKEN env var)
-        - lookback_days: Number of days of historical data to fetch (default 30)
-        - timeframe: Candle timeframe - "1", "5", "15", "30", "60", "D" (default "5min")
+        - lookback_days: Number of days of historical data to fetch (default 90)
+        - timeframe: Candle timeframe - "D" for daily (default), "60" for hourly
         - basis_lookback: Period for calculating basis mean and std dev (default 50)
         - entry_zscore_threshold: Z-score threshold for entry (default 2.0)
         - exit_zscore_threshold: Z-score threshold for exit (default 0.5)
-        - stop_loss_pct: Stop loss on total position value (default 1%)
+        - stop_loss_pct: Stop loss on total position value (default 2%)
+        - max_holding_days: Maximum days to hold position (default 25 days before expiry)
+        - funding_rate_daily: Daily funding/carry cost as % (default 0.02%)
         - lot_size: Futures lot size multiplier (default 1)
         """
 
@@ -88,17 +94,19 @@ class SpotFuturesArbitrageBacktester:
         self.entry_zscore_threshold = entry_zscore_threshold
         self.exit_zscore_threshold = exit_zscore_threshold
         self.stop_loss_pct = stop_loss_pct / 100
+        self.max_holding_days = max_holding_days
+        self.funding_rate_daily = funding_rate_daily / 100
         self.initial_capital = initial_capital
-        self.square_off_time = self.parse_square_off_time(square_off_time)
         self.lot_size = lot_size
         self.results = {}
 
         self.ist_tz = pytz.timezone('Asia/Kolkata')
 
         print("=" * 100)
-        print("SPOT-FUTURES ARBITRAGE STRATEGY BACKTESTER (FYERS API)")
+        print("DELIVERY SPOT-FUTURES ARBITRAGE STRATEGY BACKTESTER (FYERS API)")
         print("=" * 100)
-        print(f"Strategy: Market-Neutral Basis Trading")
+        print(f"Strategy: Multi-Day Market-Neutral Basis Trading")
+        print(f"Trade Type: DELIVERY (Lower Brokerage)")
         print(f"Data Source: Fyers API")
         print(f"Lookback Period: {lookback_days} days")
         print(f"Timeframe: {timeframe}")
@@ -106,28 +114,21 @@ class SpotFuturesArbitrageBacktester:
         print(f"Entry Z-Score Threshold: ±{entry_zscore_threshold}")
         print(f"Exit Z-Score Threshold: ±{exit_zscore_threshold}")
         print(f"Stop Loss: {stop_loss_pct}% on total position")
-        print(f"Square-off Time: {square_off_time} IST")
+        print(f"Max Holding Period: {max_holding_days} days")
+        print(f"Daily Funding Cost: {funding_rate_daily}%")
         print(f"Lot Size: {lot_size}")
         print("=" * 100)
 
         print(f"\nSpot-Futures Pairs to backtest: {len(self.symbol_pairs)}")
         for pair in self.symbol_pairs:
-            print(f"  - {pair['spot']} <-> {pair['futures']}")
-
-    def parse_square_off_time(self, time_str):
-        """Parse square-off time"""
-        try:
-            hour, minute = map(int, time_str.split(':'))
-            return time(hour, minute)
-        except:
-            return time(15, 20)
+            print(f"  - {pair['spot']} <-> {pair['futures']} (Expiry: {pair.get('expiry_date', 'Not specified')})")
 
     def fetch_historical_data(self, symbol, days=None):
         """
         Fetch historical data from Fyers API
 
         Args:
-            symbol: Fyers symbol (e.g., "NSE:RELIANCE-EQ", "NSE:RELIANCE25JAN")
+            symbol: Fyers symbol (e.g., "NSE:RELIANCE-EQ", "NSE:RELIANCE25JANFUT")
             days: Number of days to fetch (overrides self.lookback_days)
 
         Returns:
@@ -162,7 +163,7 @@ class SpotFuturesArbitrageBacktester:
             "1D": "D"
         }
 
-        fyers_timeframe = timeframe_map.get(self.timeframe, "5")
+        fyers_timeframe = timeframe_map.get(self.timeframe, "D")
 
         try:
             data = {
@@ -285,22 +286,42 @@ class SpotFuturesArbitrageBacktester:
 
         return df
 
-    def is_square_off_time(self, timestamp):
-        """Check if square-off time"""
+    def calculate_funding_cost(self, position_value, num_days):
+        """Calculate overnight funding/carry cost"""
+        return position_value * self.funding_rate_daily * num_days
+
+    def days_to_expiry(self, current_date, expiry_date):
+        """Calculate days remaining to futures expiry"""
+        if expiry_date is None:
+            return 999  # Large number if no expiry specified
+
         try:
-            return timestamp.time() >= self.square_off_time
+            if isinstance(expiry_date, str):
+                expiry = datetime.strptime(expiry_date, "%Y-%m-%d").date()
+            else:
+                expiry = expiry_date
+
+            if isinstance(current_date, datetime):
+                current = current_date.date()
+            else:
+                current = current_date
+
+            return (expiry - current).days
         except:
-            return False
+            return 999
 
     def backtest_pair(self, pair):
-        """Backtest arbitrage strategy for a spot-futures pair"""
+        """Backtest delivery arbitrage strategy for a spot-futures pair"""
         spot_symbol = pair['spot']
         futures_symbol = pair['futures']
         base_name = pair['base_name']
+        expiry_date = pair.get('expiry_date', None)
 
         print(f"\n{'=' * 100}")
-        print(f"BACKTESTING: {base_name}")
+        print(f"BACKTESTING: {base_name} (DELIVERY)")
         print(f"Spot: {spot_symbol} | Futures: {futures_symbol}")
+        if expiry_date:
+            print(f"Futures Expiry: {expiry_date}")
         print(f"{'=' * 100}")
 
         # Load data
@@ -321,10 +342,6 @@ class SpotFuturesArbitrageBacktester:
         df = self.calculate_basis_statistics(df)
         df = self.generate_arbitrage_signals(df)
 
-        # Add trading day info
-        df['trading_day'] = df.index.date
-        df['is_square_off'] = df.index.map(self.is_square_off_time)
-
         # Initialize trading
         cash = self.initial_capital
         position = None  # 'long_futures' or 'short_futures' or None
@@ -333,7 +350,8 @@ class SpotFuturesArbitrageBacktester:
         entry_basis = 0
         entry_z_score = 0
         entry_time = None
-        trades: List[ArbitrageTrade] = []
+        entry_index = 0
+        trades: List[DeliveryArbitrageTrade] = []
 
         # Backtest loop
         for i in range(self.basis_lookback, len(df)):
@@ -342,15 +360,23 @@ class SpotFuturesArbitrageBacktester:
             futures_price = df.iloc[i]['close_futures']
             current_basis = df.iloc[i]['basis']
             current_z_score = df.iloc[i]['z_score']
-            is_square_off = df.iloc[i]['is_square_off']
 
             # Skip if z-score is NaN
             if pd.isna(current_z_score):
                 continue
 
-            # Force square-off at 3:20 PM
-            if position and is_square_off:
+            # Check days to expiry
+            days_left = self.days_to_expiry(current_time, expiry_date)
+
+            # Force exit if approaching expiry (3 days before)
+            if position and days_left <= 3:
+                holding_days = (current_time - entry_time).days
                 quantity = int((cash * 0.5) / entry_price_spot)  # 50% per leg
+                position_value = quantity * entry_price_spot * 2
+
+                # Calculate funding cost
+                num_overnight = max(0, holding_days)
+                funding_cost = self.calculate_funding_cost(position_value, num_overnight)
 
                 # Calculate P&L for both legs
                 if position == 'long_futures':
@@ -360,10 +386,10 @@ class SpotFuturesArbitrageBacktester:
                     spot_pnl = quantity * (spot_price - entry_price_spot)  # Long spot
                     futures_pnl = quantity * (entry_price_futures - futures_price) * self.lot_size  # Short futures
 
-                total_pnl = spot_pnl + futures_pnl
-                total_pnl_pct = (total_pnl / (quantity * entry_price_spot * 2)) * 100
+                total_pnl = spot_pnl + futures_pnl - funding_cost
+                total_pnl_pct = (total_pnl / position_value) * 100
 
-                trade = ArbitrageTrade(
+                trade = DeliveryArbitrageTrade(
                     entry_time=entry_time,
                     exit_time=current_time,
                     symbol_spot=spot_symbol,
@@ -382,10 +408,12 @@ class SpotFuturesArbitrageBacktester:
                     quantity=quantity,
                     spot_pnl=spot_pnl,
                     futures_pnl=futures_pnl,
+                    funding_cost=funding_cost,
                     total_pnl=total_pnl,
                     total_pnl_pct=total_pnl_pct,
-                    exit_reason='SQUARE_OFF_3:20PM',
-                    holding_period_minutes=(current_time - entry_time).total_seconds() / 60
+                    exit_reason='APPROACHING_EXPIRY',
+                    holding_period_days=holding_days,
+                    num_overnight_holds=num_overnight
                 )
 
                 trades.append(trade)
@@ -394,8 +422,8 @@ class SpotFuturesArbitrageBacktester:
 
                 self.print_trade(trade)
 
-            # Entry signals
-            elif not position and not is_square_off:
+            # Entry signals (only if no position and sufficient time to expiry)
+            elif not position and days_left > self.max_holding_days:
                 # Long Futures + Short Spot (futures underpriced)
                 if df.iloc[i]['long_futures_signal']:
                     position = 'long_futures'
@@ -404,12 +432,14 @@ class SpotFuturesArbitrageBacktester:
                     entry_basis = current_basis
                     entry_z_score = current_z_score
                     entry_time = current_time
+                    entry_index = i
 
-                    print(f"\n  LONG FUTURES + SHORT SPOT")
-                    print(f"   Time: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                    print(f"\n  ENTRY: LONG FUTURES + SHORT SPOT (DELIVERY)")
+                    print(f"   Time: {current_time.strftime('%Y-%m-%d')}")
                     print(f"   Spot: ₹{spot_price:.2f} | Futures: ₹{futures_price:.2f}")
                     print(f"   Basis: ₹{current_basis:.2f} ({(current_basis / spot_price) * 100:.3f}%)")
                     print(f"   Z-Score: {current_z_score:.2f} (Futures UNDERPRICED)")
+                    print(f"   Days to Expiry: {days_left}")
 
                 # Short Futures + Long Spot (futures overpriced)
                 elif df.iloc[i]['short_futures_signal']:
@@ -419,25 +449,37 @@ class SpotFuturesArbitrageBacktester:
                     entry_basis = current_basis
                     entry_z_score = current_z_score
                     entry_time = current_time
+                    entry_index = i
 
-                    print(f"\n  SHORT FUTURES + LONG SPOT")
-                    print(f"   Time: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                    print(f"\n  ENTRY: SHORT FUTURES + LONG SPOT (DELIVERY)")
+                    print(f"   Time: {current_time.strftime('%Y-%m-%d')}")
                     print(f"   Spot: ₹{spot_price:.2f} | Futures: ₹{futures_price:.2f}")
                     print(f"   Basis: ₹{current_basis:.2f} ({(current_basis / spot_price) * 100:.3f}%)")
                     print(f"   Z-Score: {current_z_score:.2f} (Futures OVERPRICED)")
+                    print(f"   Days to Expiry: {days_left}")
 
             # Exit signals
-            elif position and not is_square_off:
+            elif position:
                 should_exit = False
                 exit_reason = ""
+                holding_days = (current_time - entry_time).days
 
                 # Exit on basis convergence
                 if df.iloc[i]['exit_signal']:
                     should_exit = True
                     exit_reason = "BASIS_CONVERGENCE"
 
+                # Max holding period reached
+                elif holding_days >= self.max_holding_days:
+                    should_exit = True
+                    exit_reason = "MAX_HOLDING_PERIOD"
+
                 # Stop loss check
                 quantity = int((cash * 0.5) / entry_price_spot)
+                position_value = quantity * entry_price_spot * 2
+                num_overnight = max(0, holding_days)
+                funding_cost = self.calculate_funding_cost(position_value, num_overnight)
+
                 if position == 'long_futures':
                     spot_pnl = quantity * (entry_price_spot - spot_price)
                     futures_pnl = quantity * (futures_price - entry_price_futures) * self.lot_size
@@ -445,17 +487,17 @@ class SpotFuturesArbitrageBacktester:
                     spot_pnl = quantity * (spot_price - entry_price_spot)
                     futures_pnl = quantity * (entry_price_futures - futures_price) * self.lot_size
 
-                total_pnl = spot_pnl + futures_pnl
-                loss_pct = abs(total_pnl / (quantity * entry_price_spot * 2))
+                total_pnl = spot_pnl + futures_pnl - funding_cost
+                loss_pct = abs(total_pnl / position_value)
 
                 if total_pnl < 0 and loss_pct >= self.stop_loss_pct:
                     should_exit = True
                     exit_reason = "STOP_LOSS"
 
                 if should_exit:
-                    total_pnl_pct = (total_pnl / (quantity * entry_price_spot * 2)) * 100
+                    total_pnl_pct = (total_pnl / position_value) * 100
 
-                    trade = ArbitrageTrade(
+                    trade = DeliveryArbitrageTrade(
                         entry_time=entry_time,
                         exit_time=current_time,
                         symbol_spot=spot_symbol,
@@ -474,10 +516,12 @@ class SpotFuturesArbitrageBacktester:
                         quantity=quantity,
                         spot_pnl=spot_pnl,
                         futures_pnl=futures_pnl,
+                        funding_cost=funding_cost,
                         total_pnl=total_pnl,
                         total_pnl_pct=total_pnl_pct,
                         exit_reason=exit_reason,
-                        holding_period_minutes=(current_time - entry_time).total_seconds() / 60
+                        holding_period_days=holding_days,
+                        num_overnight_holds=num_overnight
                     )
 
                     trades.append(trade)
@@ -497,13 +541,13 @@ class SpotFuturesArbitrageBacktester:
             'data': df
         }
 
-    def print_trade(self, trade: ArbitrageTrade):
+    def print_trade(self, trade: DeliveryArbitrageTrade):
         """Print trade details"""
-        print(f"\n  ARBITRAGE TRADE CLOSED")
+        print(f"\n  DELIVERY ARBITRAGE TRADE CLOSED")
         print(f"   Position: {trade.position_type.replace('_', ' ').upper()}")
-        print(f"   Entry:  {trade.entry_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"   Exit:   {trade.exit_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"   Duration: {trade.holding_period_minutes:.1f} minutes")
+        print(f"   Entry:  {trade.entry_time.strftime('%Y-%m-%d')}")
+        print(f"   Exit:   {trade.exit_time.strftime('%Y-%m-%d')}")
+        print(f"   Duration: {trade.holding_period_days} days ({trade.num_overnight_holds} overnight holds)")
         print(f"")
         print(f"   Entry Prices  - Spot: ₹{trade.entry_spot_price:.2f} | Futures: ₹{trade.entry_futures_price:.2f}")
         print(f"   Exit Prices   - Spot: ₹{trade.exit_spot_price:.2f} | Futures: ₹{trade.exit_futures_price:.2f}")
@@ -511,17 +555,18 @@ class SpotFuturesArbitrageBacktester:
         print(f"   Exit Basis:   ₹{trade.exit_basis:.2f} ({trade.exit_basis_pct:.3f}%) | Z-Score: {trade.exit_z_score:.2f}")
         print(f"   Basis Change: {trade.exit_basis - trade.entry_basis:.2f} ({trade.exit_basis_pct - trade.entry_basis_pct:.3f}%)")
         print(f"")
-        print(f"   Spot Leg P&L:    ₹{trade.spot_pnl:,.2f}")
-        print(f"   Futures Leg P&L: ₹{trade.futures_pnl:,.2f}")
-        print(f"   Total P&L:       ₹{trade.total_pnl:,.2f} ({trade.total_pnl_pct:+.2f}%)")
-        print(f"   Exit Reason:     {trade.exit_reason}")
+        print(f"   Spot Leg P&L:      ₹{trade.spot_pnl:,.2f}")
+        print(f"   Futures Leg P&L:   ₹{trade.futures_pnl:,.2f}")
+        print(f"   Funding Cost:      ₹{trade.funding_cost:,.2f}")
+        print(f"   Net P&L:           ₹{trade.total_pnl:,.2f} ({trade.total_pnl_pct:+.2f}%)")
+        print(f"   Exit Reason:       {trade.exit_reason}")
 
         if trade.total_pnl > 0:
             print(f"   Result: ✓ PROFIT")
         else:
             print(f"   Result: ✗ LOSS")
 
-    def calculate_metrics(self, trades: List[ArbitrageTrade], df):
+    def calculate_metrics(self, trades: List[DeliveryArbitrageTrade], df):
         """Calculate performance metrics"""
         if not trades:
             return {
@@ -530,16 +575,19 @@ class SpotFuturesArbitrageBacktester:
                 'losing_trades': 0,
                 'win_rate': 0,
                 'total_pnl': 0,
+                'total_funding_cost': 0,
                 'avg_pnl_per_trade': 0,
                 'best_trade': 0,
                 'worst_trade': 0,
                 'avg_holding_period': 0,
+                'avg_overnight_holds': 0,
                 'avg_entry_z_score': 0,
                 'avg_exit_z_score': 0,
                 'avg_basis_convergence': 0,
                 'basis_convergence_trades': 0,
                 'stop_loss_trades': 0,
-                'square_off_trades': 0,
+                'max_holding_trades': 0,
+                'expiry_trades': 0,
                 'long_futures_trades': 0,
                 'short_futures_trades': 0,
                 'avg_spot_pnl': 0,
@@ -551,7 +599,8 @@ class SpotFuturesArbitrageBacktester:
 
         basis_convergence = [t for t in trades if t.exit_reason == 'BASIS_CONVERGENCE']
         stop_loss = [t for t in trades if t.exit_reason == 'STOP_LOSS']
-        square_off = [t for t in trades if t.exit_reason == 'SQUARE_OFF_3:20PM']
+        max_holding = [t for t in trades if t.exit_reason == 'MAX_HOLDING_PERIOD']
+        expiry = [t for t in trades if t.exit_reason == 'APPROACHING_EXPIRY']
 
         long_futures = [t for t in trades if t.position_type == 'long_futures']
         short_futures = [t for t in trades if t.position_type == 'short_futures']
@@ -562,16 +611,19 @@ class SpotFuturesArbitrageBacktester:
             'losing_trades': len(losing_trades),
             'win_rate': (len(winning_trades) / len(trades)) * 100,
             'total_pnl': sum(t.total_pnl for t in trades),
+            'total_funding_cost': sum(t.funding_cost for t in trades),
             'avg_pnl_per_trade': np.mean([t.total_pnl for t in trades]),
             'best_trade': max(t.total_pnl for t in trades),
             'worst_trade': min(t.total_pnl for t in trades),
-            'avg_holding_period': np.mean([t.holding_period_minutes for t in trades]),
+            'avg_holding_period': np.mean([t.holding_period_days for t in trades]),
+            'avg_overnight_holds': np.mean([t.num_overnight_holds for t in trades]),
             'avg_entry_z_score': np.mean([abs(t.entry_z_score) for t in trades]),
             'avg_exit_z_score': np.mean([abs(t.exit_z_score) for t in trades]),
             'avg_basis_convergence': np.mean([abs(t.entry_basis_pct - t.exit_basis_pct) for t in trades]),
             'basis_convergence_trades': len(basis_convergence),
             'stop_loss_trades': len(stop_loss),
-            'square_off_trades': len(square_off),
+            'max_holding_trades': len(max_holding),
+            'expiry_trades': len(expiry),
             'long_futures_trades': len(long_futures),
             'short_futures_trades': len(short_futures),
             'avg_spot_pnl': np.mean([t.spot_pnl for t in trades]),
@@ -582,10 +634,11 @@ class SpotFuturesArbitrageBacktester:
 
     def run_backtest(self):
         """Run backtest for all pairs"""
-        print(f"\nStarting Spot-Futures Arbitrage Backtest")
+        print(f"\nStarting Delivery Spot-Futures Arbitrage Backtest")
         print(f"Pairs: {len(self.symbol_pairs)}")
         print(f"Entry Threshold: Z-score ±{self.entry_zscore_threshold}")
-        print(f"Exit Threshold: Z-score ±{self.exit_zscore_threshold}\n")
+        print(f"Exit Threshold: Z-score ±{self.exit_zscore_threshold}")
+        print(f"Max Holding: {self.max_holding_days} days\n")
 
         for pair in self.symbol_pairs:
             try:
@@ -605,12 +658,13 @@ class SpotFuturesArbitrageBacktester:
     def print_overall_summary(self):
         """Print overall performance summary"""
         print(f"\n{'=' * 100}")
-        print("OVERALL SPOT-FUTURES ARBITRAGE PERFORMANCE")
+        print("OVERALL DELIVERY ARBITRAGE PERFORMANCE")
         print(f"{'=' * 100}")
 
         total_pairs = len(self.results)
         total_trades = sum(r['metrics']['total_trades'] for r in self.results.values())
         total_pnl = sum(r['final_capital'] - self.initial_capital for r in self.results.values())
+        total_funding = sum(r['metrics']['total_funding_cost'] for r in self.results.values())
         avg_return = (total_pnl / (self.initial_capital * total_pairs)) * 100
 
         profitable_pairs = sum(1 for r in self.results.values() if r['final_capital'] > self.initial_capital)
@@ -619,6 +673,8 @@ class SpotFuturesArbitrageBacktester:
         print(f"Profitable Pairs:      {profitable_pairs} ({(profitable_pairs / total_pairs) * 100:.1f}%)")
         print(f"Total Trades:          {total_trades}")
         print(f"Total P&L:             ₹{total_pnl:,.2f}")
+        print(f"Total Funding Cost:    ₹{total_funding:,.2f}")
+        print(f"Net P&L:               ₹{total_pnl:,.2f}")
         print(f"Average Return/Pair:   {avg_return:+.2f}%")
 
         if total_trades > 0:
@@ -628,10 +684,11 @@ class SpotFuturesArbitrageBacktester:
 
             winning = [t for t in all_trades if t.total_pnl > 0]
             overall_win_rate = (len(winning) / len(all_trades)) * 100
-            avg_holding = np.mean([t.holding_period_minutes for t in all_trades])
+            avg_holding = np.mean([t.holding_period_days for t in all_trades])
+            avg_overnight = np.mean([t.num_overnight_holds for t in all_trades])
 
             print(f"Overall Win Rate:      {overall_win_rate:.1f}%")
-            print(f"Avg Holding Period:    {avg_holding:.1f} minutes")
+            print(f"Avg Holding Period:    {avg_holding:.1f} days ({avg_overnight:.1f} overnight holds)")
 
             # Position type breakdown
             long_fut = [t for t in all_trades if t.position_type == 'long_futures']
@@ -652,11 +709,13 @@ class SpotFuturesArbitrageBacktester:
             print(f"\nExit Reason Breakdown:")
             convergence = sum(r['metrics']['basis_convergence_trades'] for r in self.results.values())
             stop_loss = sum(r['metrics']['stop_loss_trades'] for r in self.results.values())
-            square_off = sum(r['metrics']['square_off_trades'] for r in self.results.values())
+            max_holding = sum(r['metrics']['max_holding_trades'] for r in self.results.values())
+            expiry = sum(r['metrics']['expiry_trades'] for r in self.results.values())
 
-            print(f"  Basis Convergence: {convergence} ({(convergence / total_trades) * 100:.1f}%)")
-            print(f"  Stop Loss:         {stop_loss} ({(stop_loss / total_trades) * 100:.1f}%)")
-            print(f"  Square-off:        {square_off} ({(square_off / total_trades) * 100:.1f}%)")
+            print(f"  Basis Convergence:    {convergence} ({(convergence / total_trades) * 100:.1f}%)")
+            print(f"  Stop Loss:            {stop_loss} ({(stop_loss / total_trades) * 100:.1f}%)")
+            print(f"  Max Holding Period:   {max_holding} ({(max_holding / total_trades) * 100:.1f}%)")
+            print(f"  Approaching Expiry:   {expiry} ({(expiry / total_trades) * 100:.1f}%)")
 
         # Best and worst pairs
         if self.results:
@@ -673,7 +732,7 @@ class SpotFuturesArbitrageBacktester:
 
         print(f"{'=' * 100}")
 
-    def export_results(self, filename_prefix="spot_futures_arbitrage"):
+    def export_results(self, filename_prefix="delivery_arbitrage"):
         """Export results to CSV"""
         if not self.results:
             print("No results to export.")
@@ -701,10 +760,12 @@ class SpotFuturesArbitrageBacktester:
                     'quantity': trade.quantity,
                     'spot_pnl': trade.spot_pnl,
                     'futures_pnl': trade.futures_pnl,
+                    'funding_cost': trade.funding_cost,
                     'total_pnl': trade.total_pnl,
                     'total_pnl_pct': trade.total_pnl_pct,
                     'exit_reason': trade.exit_reason,
-                    'holding_period_minutes': trade.holding_period_minutes
+                    'holding_period_days': trade.holding_period_days,
+                    'num_overnight_holds': trade.num_overnight_holds
                 })
 
         trades_df = pd.DataFrame(all_trades)
@@ -726,15 +787,18 @@ class SpotFuturesArbitrageBacktester:
                 'losing_trades': metrics['losing_trades'],
                 'win_rate': metrics['win_rate'],
                 'total_pnl': metrics['total_pnl'],
+                'total_funding_cost': metrics['total_funding_cost'],
                 'avg_pnl_per_trade': metrics['avg_pnl_per_trade'],
                 'best_trade': metrics['best_trade'],
                 'worst_trade': metrics['worst_trade'],
                 'return_pct': returns,
                 'final_capital': result['final_capital'],
-                'avg_holding_period': metrics['avg_holding_period'],
+                'avg_holding_period_days': metrics['avg_holding_period'],
+                'avg_overnight_holds': metrics['avg_overnight_holds'],
                 'basis_convergence_trades': metrics['basis_convergence_trades'],
                 'stop_loss_trades': metrics['stop_loss_trades'],
-                'square_off_trades': metrics['square_off_trades'],
+                'max_holding_trades': metrics['max_holding_trades'],
+                'expiry_trades': metrics['expiry_trades'],
                 'long_futures_trades': metrics['long_futures_trades'],
                 'short_futures_trades': metrics['short_futures_trades']
             })
@@ -748,9 +812,15 @@ class SpotFuturesArbitrageBacktester:
 # Main execution
 if __name__ == "__main__":
     """
-    SPOT-FUTURES ARBITRAGE STRATEGY (FYERS API)
+    DELIVERY SPOT-FUTURES ARBITRAGE STRATEGY (FYERS API)
 
-    Market-Neutral Strategy that profits from basis (spread) convergence
+    Market-Neutral Strategy with Multi-Day Holding (Lower Brokerage)
+
+    Key Advantages Over Intraday:
+    - Lower transaction costs (delivery vs intraday brokerage)
+    - No forced 3:20 PM square-off
+    - Allows basis to converge naturally over days
+    - Better risk-reward for patient traders
 
     Entry Logic:
     - Long Futures + Short Spot: When basis z-score < -2.0 (futures underpriced)
@@ -758,55 +828,66 @@ if __name__ == "__main__":
 
     Exit Logic:
     - Basis Convergence: |z-score| < 0.5
-    - Stop Loss: 1% on total position value
-    - Square-off: 3:20 PM IST
+    - Stop Loss: 2% on total position value
+    - Max Holding: 25 days (or before futures expiry)
+    - Approaching Expiry: 3 days before expiry date
+
+    Costs Considered:
+    - Daily funding/carry cost: 0.02% per day
+    - Reflects overnight holding costs
 
     Risk Profile:
     - Market-neutral (hedged position)
     - Lower risk than directional strategies
-    - Profits from basis convergence, not price movement
+    - Profits from basis convergence over multiple days
 
     Setup:
     - Set FYERS_ACCESS_TOKEN environment variable
     - Or pass access_token parameter to backtester
+    - Specify futures expiry dates for each pair
     """
 
-    # Example symbol pairs (adjust based on available Fyers symbols)
+    # Example symbol pairs with expiry dates
     symbol_pairs = [
         {
             'spot': 'NSE:RELIANCE-EQ',
-            'futures': 'NSE:RELIANCE25DECFUT',  # Adjust month as needed
-            'base_name': 'RELIANCE'
+            'futures': 'NSE:RELIANCE25JANFUT',
+            'base_name': 'RELIANCE',
+            'expiry_date': '2025-01-30'  # Last Thursday of January
         },
         {
             'spot': 'NSE:HDFCBANK-EQ',
-            'futures': 'NSE:HDFCBANK25DECFUT',
-            'base_name': 'HDFCBANK'
+            'futures': 'NSE:HDFCBANK25JANFUT',
+            'base_name': 'HDFCBANK',
+            'expiry_date': '2025-01-30'
         },
         {
             'spot': 'NSE:INFY-EQ',
-            'futures': 'NSE:INFY25DECFUT',
-            'base_name': 'INFY'
+            'futures': 'NSE:INFY25JANFUT',
+            'base_name': 'INFY',
+            'expiry_date': '2025-01-30'
         },
         {
             'spot': 'NSE:TCS-EQ',
-            'futures': 'NSE:TCS25DECFUT',
-            'base_name': 'TCS'
+            'futures': 'NSE:TCS25JANFUT',
+            'base_name': 'TCS',
+            'expiry_date': '2025-01-30'
         }
     ]
 
     # Initialize backtester
-    backtester = SpotFuturesArbitrageBacktester(
+    backtester = DeliveryArbitrageBacktester(
         symbols=symbol_pairs,
         access_token=None,  # Will use FYERS_ACCESS_TOKEN env var
-        lookback_days=60,  # 7 days of historical data
-        timeframe="1min",  # 5-minute candles
+        lookback_days=30,  # 90 days of historical data
+        timeframe="D",  # Daily candles (can use "60" for hourly if needed)
         basis_lookback=50,  # 50-period lookback for basis statistics
         entry_zscore_threshold=2.0,  # Enter when z-score > 2 or < -2
         exit_zscore_threshold=0.5,  # Exit when |z-score| < 0.5
-        stop_loss_pct=1.0,  # 1% stop loss on total position
+        stop_loss_pct=2.0,  # 2% stop loss on total position
+        max_holding_days=25,  # Maximum 25 days holding
+        funding_rate_daily=0.02,  # 0.02% daily funding cost
         initial_capital=200000,
-        square_off_time="15:20",
         lot_size=1  # Adjust for actual futures lot size
     )
 
@@ -816,5 +897,5 @@ if __name__ == "__main__":
     # Export results
     if results:
         backtester.export_results()
-        print(f"\nBacktest Complete!")
+        print(f"\nDelivery Arbitrage Backtest Complete!")
         print(f"Tested {len(results)} spot-futures pairs")
