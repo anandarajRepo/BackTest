@@ -472,9 +472,9 @@ class AdvancedHeikinAshiBacktester:
                 duration = (current_time - entry_time).total_seconds() / 60
 
                 print(f"\n[Trade #{trade_number}] SQUARE-OFF @ 3:20 PM")
-                print(f"  Entry:  {entry_time.strftime('%H:%M:%S')} @ ₹{entry_price:.2f}")
-                print(f"  Exit:   {current_time.strftime('%H:%M:%S')} @ ₹{current_price:.2f}")
-                print(f"  Duration: {duration:.1f} min | P&L: ₹{trade_pnl:.2f} ({trade_return:+.2f}%)")
+                print(f"  Entry:  {entry_time.strftime('%H:%M:%S')} @ Rs.{entry_price:.2f}")
+                print(f"  Exit:   {current_time.strftime('%H:%M:%S')} @ Rs.{current_price:.2f}")
+                print(f"  Duration: {duration:.1f} min | P&L: Rs.{trade_pnl:.2f} ({trade_return:+.2f}%)")
                 print(f"  {'✅ PROFIT' if trade_pnl > 0 else '❌ LOSS'}")
 
                 trades.append({
@@ -715,10 +715,10 @@ if __name__ == "__main__":
         atr_period=14,  # Standard ATR period
         atr_multiplier=2.0,  # 2x ATR for trailing stop
         breakeven_profit_pct=1.0,  # Move to breakeven at 1% profit
-        consecutive_candles=2,  # Require 2 consecutive bullish candles
+        consecutive_candles=1,  # Require 2 consecutive bullish candles
         initial_capital=100000,
         square_off_time="15:20",
-        tick_interval=None  # Options: None (raw ticks), '5s', '10s', '30s', '1min', '5min', etc.
+        tick_interval='1min'  # Options: None (raw ticks), '5s', '10s', '30s', '1min', '5min', etc.
     )
 
     backtester.run_backtest()
