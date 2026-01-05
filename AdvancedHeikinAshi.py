@@ -715,10 +715,10 @@ if __name__ == "__main__":
         atr_period=14,  # Standard ATR period
         atr_multiplier=2.0,  # 2x ATR for trailing stop
         breakeven_profit_pct=1.0,  # Move to breakeven at 1% profit
-        consecutive_candles=1,  # Require 2 consecutive bullish candles
+        consecutive_candles=2,  # Require 2 consecutive bullish candles
         initial_capital=100000,
         square_off_time="15:20",
-        tick_interval='1min'  # Options: None (raw ticks), '5s', '10s', '30s', '1min', '5min', etc.
+        tick_interval='30s'  # Options: None (raw ticks), '5s', '10s', '30s', '1min', '5min', etc.
     )
 
     backtester.run_backtest()
