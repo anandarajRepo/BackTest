@@ -14,7 +14,7 @@ warnings.filterwarnings('ignore')
 load_dotenv()
 
 class OpenRangeBreakoutBacktester:
-    def __init__(self, fyers_access_token, symbols=None,
+    def __init__(self, fyers_client_id, fyers_access_token, symbols=None,
                  opening_range_minutes=15, breakout_confirmation_pct=0.2,
                  volume_threshold_mult=1.3, atr_period=14,
                  stop_loss_atr_mult=1.5, target_atr_mult=3.0,
@@ -107,7 +107,7 @@ class OpenRangeBreakoutBacktester:
         - min_risk_reward: Minimum risk-reward ratio (default: 1.5)
         """
         # Initialize Fyers client
-        self.fyers = fyersModel.FyersModel(client_id="", token=fyers_access_token, is_async=False, log_path="")
+        self.fyers = fyersModel.FyersModel(client_id=fyers_client_id, token=fyers_access_token, is_async=False, log_path="")
 
         # Date range for backtest (last N days)
         self.backtest_days = backtest_days
@@ -863,15 +863,24 @@ if __name__ == "__main__":
     print("OPEN RANGE BREAKOUT (ORB) STRATEGY - INTRADAY BACKTEST WITH FYERS")
     print("="*100)
 
-    # IMPORTANT: Set your Fyers access token here
-    # Get your access token from Fyers API authentication
+    # IMPORTANT: Set your Fyers credentials here
+    # Get these from Fyers API authentication
+    FYERS_CLIENT_ID = os.environ.get('FYERS_CLIENT_ID')
     FYERS_ACCESS_TOKEN = os.environ.get('FYERS_ACCESS_TOKEN')
 
-    # Validate access token
-    if FYERS_ACCESS_TOKEN == "YOUR_FYERS_ACCESS_TOKEN_HERE" or not FYERS_ACCESS_TOKEN:
-        print("\n❌ ERROR: Please set your Fyers access token in the FYERS_ACCESS_TOKEN variable")
-        print("   You can get your access token from Fyers API authentication")
-        print("   Visit: https://myapi.fyers.in/docsv3/#tag/Authentication\n")
+    # Validate credentials
+    if not FYERS_CLIENT_ID or not FYERS_ACCESS_TOKEN:
+        print("\n❌ ERROR: Missing Fyers API credentials!")
+        print("   Please set both FYERS_CLIENT_ID and FYERS_ACCESS_TOKEN environment variables")
+        print("\n   Step 1: Create a .env file in the project root")
+        print("   Step 2: Add your credentials:")
+        print("           FYERS_CLIENT_ID=your_client_id_here")
+        print("           FYERS_ACCESS_TOKEN=your_access_token_here")
+        print("\n   How to get credentials:")
+        print("   1. Login to: https://myapi.fyers.in/dashboard/")
+        print("   2. Create an app to get your CLIENT_ID")
+        print("   3. Generate access token using authentication flow")
+        print("   4. Visit docs: https://myapi.fyers.in/docsv3/#tag/Authentication\n")
         exit(1)
 
     # Define symbols to backtest (Fyers format: NSE:SYMBOL-EQ)
@@ -916,6 +925,7 @@ if __name__ == "__main__":
     ]
 
     backtester = OpenRangeBreakoutBacktester(
+        fyers_client_id=FYERS_CLIENT_ID,
         fyers_access_token=FYERS_ACCESS_TOKEN,
         symbols=SYMBOLS,
         backtest_days=7,  # Last 7 days
