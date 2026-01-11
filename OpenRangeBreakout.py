@@ -10,6 +10,7 @@ from fyers_apiv3 import fyersModel
 warnings.filterwarnings('ignore')
 
 
+
 class OpenRangeBreakoutBacktester:
     def __init__(self, fyers_access_token, symbols=None,
                  opening_range_minutes=15, breakout_confirmation_pct=0.2,
@@ -862,7 +863,7 @@ if __name__ == "__main__":
 
     # IMPORTANT: Set your Fyers access token here
     # Get your access token from Fyers API authentication
-    FYERS_ACCESS_TOKEN = "YOUR_FYERS_ACCESS_TOKEN_HERE"
+    FYERS_ACCESS_TOKEN = os.environ.get('FYERS_ACCESS_TOKEN')
 
     # Validate access token
     if FYERS_ACCESS_TOKEN == "YOUR_FYERS_ACCESS_TOKEN_HERE" or not FYERS_ACCESS_TOKEN:
@@ -878,6 +879,38 @@ if __name__ == "__main__":
         "NSE:TCS-EQ",       # Tata Consultancy Services
         "NSE:INFY-EQ",      # Infosys
         "NSE:HDFCBANK-EQ"   # HDFC Bank
+
+        "NSE:URBANCO-EQ",
+        "NSE:AMANTA-EQ",
+        "NSE:VIKRAMSOLR-EQ",
+        "NSE:SHREEJISPG-EQ",
+        "NSE:PATELRMART-EQ",
+        "NSE:REGAAL-EQ",
+        "NSE:HILINFRA-EQ",
+        "NSE:SAATVIKGL-EQ",
+        "NSE:ATLANTAELE-EQ",
+        "NSE:STYL-EQ",
+        "NSE:SOLARWORLD-EQ",
+        "NSE:TRUALT-EQ",
+        "NSE:ADVANCE-EQ",
+        "NSE:LGEINDIA-EQ",
+        "NSE:RUBICON-EQ",
+        "NSE:MIDWESTLTD-EQ",
+        "NSE:ORKLAINDIA-EQ",
+        "NSE:LENSKART-EQ",
+        "NSE:GROWW-EQ",
+        "NSE:SUDEEPPHRM-EQ",
+        "NSE:EXCELSOFT-EQ",
+        "NSE:TENNIND-EQ",
+        "NSE:MEESHO-EQ",
+        "NSE:AEQUS-EQ",
+        "NSE:CORONA-EQ",
+
+        # Favourite Stocks
+        "NSE:STLTECH-EQ",
+        "NSE:SKYGOLD-EQ",
+        "NSE:AXISCADES-EQ",
+        "BSE:SATTRIX-M"
     ]
 
     backtester = OpenRangeBreakoutBacktester(
