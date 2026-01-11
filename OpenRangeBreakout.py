@@ -6,10 +6,12 @@ from datetime import datetime, time, timedelta
 import pytz
 import warnings
 from fyers_apiv3 import fyersModel
+from dotenv import load_dotenv
 
 warnings.filterwarnings('ignore')
 
-
+# Load environment variables
+load_dotenv()
 
 class OpenRangeBreakoutBacktester:
     def __init__(self, fyers_access_token, symbols=None,

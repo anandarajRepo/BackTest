@@ -1,0 +1,8 @@
+# requirements.txt - Open Range Breakout Trading Strategy
+
+# Core Fyers API (manages its own websocket-client version)
+fyers-apiv3>=3.0.8
+
+# HTTP requests and environment management
+requests>=2.31.0
+python-dotenv==1.0.0
