@@ -1,28 +1,28 @@
-import sqlite3
 import pandas as pd
 import numpy as np
 import json
-import glob
 import os
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import pytz
 import warnings
+from fyers_apiv3 import fyersModel
 
 warnings.filterwarnings('ignore')
 
 
 class OpenRangeBreakoutBacktester:
-    def __init__(self, data_folder="data", symbols=None,
+    def __init__(self, fyers_access_token, symbols=None,
                  opening_range_minutes=15, breakout_confirmation_pct=0.2,
                  volume_threshold_mult=1.3, atr_period=14,
                  stop_loss_atr_mult=1.5, target_atr_mult=3.0,
                  target_range_mult=2.0, use_atr_targets=True,
                  trailing_stop_atr_mult=1.0, use_trailing_stop=False,
                  initial_capital=100000, square_off_time="15:20",
-                 min_data_points=100, tick_interval='1min',
+                 min_data_points=100, tick_interval='5',
                  last_entry_time="14:30", max_trades_per_day=3,
                  min_risk_reward=1.5, min_range_pct=0.3,
-                 max_range_pct=3.0, false_breakout_candles=2):
+                 max_range_pct=3.0, false_breakout_candles=2,
+                 backtest_days=7):
         """
         Open Range Breakout (ORB) Strategy for Intraday Trading
 
@@ -103,8 +103,16 @@ class OpenRangeBreakoutBacktester:
         - max_trades_per_day: Maximum trades per day (default: 3)
         - min_risk_reward: Minimum risk-reward ratio (default: 1.5)
         """
-        self.data_folder = data_folder
-        self.db_files = self.find_database_files()
+        # Initialize Fyers client
+        self.fyers = fyersModel.FyersModel(client_id="", token=fyers_access_token, is_async=False, log_path="")
+
+        # Date range for backtest (last N days)
+        self.backtest_days = backtest_days
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        end_date = datetime.now(ist_tz)
+        start_date = end_date - timedelta(days=backtest_days)
+        self.range_from = int(start_date.timestamp())
+        self.range_to = int(end_date.timestamp())
 
         # Opening range parameters
         self.opening_range_minutes = opening_range_minutes
@@ -150,10 +158,13 @@ class OpenRangeBreakoutBacktester:
         self.ist_tz = pytz.timezone('Asia/Kolkata')
 
         print(f"{'='*100}")
-        print(f"OPEN RANGE BREAKOUT (ORB) STRATEGY - INTRADAY TRADING")
+        print(f"OPEN RANGE BREAKOUT (ORB) STRATEGY - INTRADAY TRADING (FYERS DATA)")
         print(f"{'='*100}")
-        print(f"Strategy Parameters:")
-        print(f"  Tick Interval: {self.tick_interval}")
+        print(f"Data Source: Fyers API")
+        print(f"Backtest Period: Last {backtest_days} days")
+        print(f"Date Range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        print(f"\nStrategy Parameters:")
+        print(f"  Tick Interval: {self.tick_interval} seconds")
         print(f"  Opening Range: {self.opening_range_minutes} minutes (9:15 - {self.range_end_minutes//60}:{self.range_end_minutes%60:02d})")
         print(f"  Range Validation: {min_range_pct}% - {max_range_pct}% of price")
         print(f"  Breakout Confirmation: {breakout_confirmation_pct}% move, {self.volume_threshold_mult}x volume")
@@ -175,14 +186,14 @@ class OpenRangeBreakoutBacktester:
         print(f"  Initial Capital: ₹{self.initial_capital:,}")
         print(f"{'='*100}")
 
-        # Auto-detect symbols
+        # Set symbols
         if symbols is None:
-            print("\nAuto-detecting symbols from databases...")
-            self.symbols = self.auto_detect_symbols()
+            # Default symbols if none provided
+            self.symbols = ["NSE:SBIN-EQ", "NSE:RELIANCE-EQ", "NSE:TCS-EQ"]
+            print(f"\nUsing default symbols: {self.symbols}")
         else:
             self.symbols = symbols
-
-        print(f"\nSymbols to backtest: {len(self.symbols)}")
+            print(f"\nSymbols to backtest: {len(self.symbols)}")
 
     def parse_square_off_time(self, time_str):
         """Parse time string to time object"""
@@ -192,168 +203,61 @@ class OpenRangeBreakoutBacktester:
         except:
             return time(15, 20)
 
-    def find_database_files(self):
-        """Find all database files"""
-        if not os.path.exists(self.data_folder):
-            return []
-        db_files = glob.glob(os.path.join(self.data_folder, "*.db"))
-        return sorted(db_files)
-
-    def auto_detect_symbols(self):
-        """Auto-detect symbols from databases"""
-        all_symbols = set()
-        symbol_stats = {}
-
-        for db_file in self.db_files:
-            try:
-                conn = sqlite3.connect(db_file)
-                query = """
-                SELECT symbol, COUNT(*) as record_count,
-                       MIN(timestamp) as first_record,
-                       MAX(timestamp) as last_record
-                FROM market_data
-                GROUP BY symbol
-                HAVING COUNT(*) >= ?
-                ORDER BY record_count DESC
-                """
-                symbols_df = pd.read_sql_query(query, conn, params=(self.min_data_points,))
-                conn.close()
-
-                for _, row in symbols_df.iterrows():
-                    symbol = row['symbol']
-                    all_symbols.add(symbol)
-
-                    if symbol not in symbol_stats:
-                        symbol_stats[symbol] = {
-                            'total_records': 0,
-                            'databases': []
-                        }
-
-                    symbol_stats[symbol]['total_records'] += row['record_count']
-                    symbol_stats[symbol]['databases'].append(os.path.basename(db_file))
-            except:
-                continue
-
-        # Filter and sort symbols
-        filtered_symbols = [s for s, stats in symbol_stats.items()
-                          if stats['total_records'] >= self.min_data_points]
-
-        return sorted(filtered_symbols,
-                     key=lambda s: symbol_stats[s]['total_records'],
-                     reverse=True)[:20]
-
-    def load_data_from_all_databases(self, symbol):
-        """Load and combine data from all databases"""
-        combined_df = pd.DataFrame()
-
-        for db_file in self.db_files:
-            try:
-                df = self.load_data_from_single_db(db_file, symbol)
-                if df is not None and not df.empty:
-                    df['source_db'] = os.path.basename(db_file)
-                    combined_df = pd.concat([combined_df, df], ignore_index=False)
-            except:
-                continue
-
-        if combined_df.empty:
-            return None
-
-        # Sort and remove duplicates
-        combined_df = combined_df.sort_index()
-        combined_df = combined_df[~combined_df.index.duplicated(keep='first')]
-
-        # Resample tick data
-        if self.tick_interval is not None:
-            combined_df = self.resample_tick_data(combined_df, self.tick_interval)
-
-        return combined_df
-
-    def load_data_from_single_db(self, db_path, symbol):
-        """Load data from a single database"""
+    def load_data_from_fyers(self, symbol):
+        """Load historical data from Fyers API"""
         try:
-            conn = sqlite3.connect(db_path)
+            print(f"  Fetching data from Fyers for {symbol}...")
 
-            check_query = "SELECT COUNT(*) FROM market_data WHERE symbol = ?"
-            count_result = pd.read_sql_query(check_query, conn, params=(symbol,))
+            # Prepare data request
+            data = {
+                "symbol": symbol,
+                "resolution": self.tick_interval,  # Resolution in seconds (e.g., "5" for 5 seconds)
+                "date_format": "0",  # Unix timestamp
+                "range_from": str(self.range_from),
+                "range_to": str(self.range_to),
+                "cont_flag": "1"
+            }
 
-            if count_result.iloc[0, 0] == 0:
-                conn.close()
+            # Fetch data from Fyers
+            response = self.fyers.history(data=data)
+
+            if response.get('s') != 'ok' or 'candles' not in response:
+                print(f"  Error fetching data: {response.get('message', 'No candles data')}")
                 return None
 
-            query = """
-            SELECT timestamp, symbol, ltp, high_price, low_price, close_price,
-                   volume, raw_data
-            FROM market_data
-            WHERE symbol = ?
-            ORDER BY timestamp
-            """
-
-            df = pd.read_sql_query(query, conn, params=(symbol,))
-            conn.close()
-
-            if df.empty:
+            candles = response['candles']
+            if not candles or len(candles) == 0:
+                print(f"  No data available for {symbol}")
                 return None
 
-            # Parse raw_data
-            def parse_raw_data(raw_data_str):
-                try:
-                    if raw_data_str:
-                        raw_data = json.loads(raw_data_str)
-                        return pd.Series({
-                            'high_raw': raw_data.get('high_price', np.nan),
-                            'low_raw': raw_data.get('low_price', np.nan),
-                            'volume_raw': raw_data.get('vol_traded_today', 0)
-                        })
-                    else:
-                        return pd.Series({'high_raw': np.nan, 'low_raw': np.nan, 'volume_raw': 0})
-                except:
-                    return pd.Series({'high_raw': np.nan, 'low_raw': np.nan, 'volume_raw': 0})
+            # Convert to DataFrame
+            df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
-            raw_parsed = df['raw_data'].apply(parse_raw_data)
-            df = pd.concat([df, raw_parsed], axis=1)
-
-            # Create OHLC
-            df['open'] = df['ltp']
-            df['high'] = df['high_raw'].fillna(df['high_price']).fillna(df['ltp'])
-            df['low'] = df['low_raw'].fillna(df['low_price']).fillna(df['ltp'])
-            df['close'] = df['close_price'].fillna(df['ltp'])
-            df['volume'] = df['volume_raw'].fillna(df['volume']).fillna(0)
-
-            # Convert timestamp
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            # Convert timestamp to datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
             df = df.set_index('timestamp')
+
+            # Convert to IST timezone
+            df.index = df.index.tz_localize('UTC').tz_convert(self.ist_tz)
+
+            # Remove timezone info for easier handling
+            df.index = df.index.tz_localize(None)
+
+            # Filter to only include market hours (9:00 AM - 3:30 PM IST)
+            df = df.between_time('09:00', '15:30')
 
             # Remove missing data
             df = df.dropna(subset=['close', 'high', 'low'])
 
+            print(f"  Loaded {len(df)} candles from {df.index[0].date()} to {df.index[-1].date()}")
+
             return df[['open', 'high', 'low', 'close', 'volume']].copy()
 
         except Exception as e:
+            print(f"  Error loading data for {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
-
-    def resample_tick_data(self, df, interval):
-        """Resample tick data to specified time interval"""
-        if df is None or df.empty:
-            return df
-
-        if not isinstance(df.index, pd.DatetimeIndex):
-            return df
-
-        resampled = df.resample(interval).agg({
-            'open': 'first',
-            'high': 'max',
-            'low': 'min',
-            'close': 'last',
-            'volume': 'sum'
-        })
-
-        resampled = resampled.dropna(subset=['close'])
-        resampled['open'] = resampled['open'].fillna(resampled['close'])
-        resampled['high'] = resampled['high'].fillna(resampled['close'])
-        resampled['low'] = resampled['low'].fillna(resampled['close'])
-        resampled['volume'] = resampled['volume'].fillna(0)
-
-        return resampled
 
     def calculate_atr(self, df):
         """Calculate Average True Range"""
@@ -498,7 +402,7 @@ class OpenRangeBreakoutBacktester:
         print(f"Backtesting: {symbol}")
         print(f"{'='*100}")
 
-        df = self.load_data_from_all_databases(symbol)
+        df = self.load_data_from_fyers(symbol)
 
         if df is None or len(df) < self.atr_period * 3:
             print(f"Insufficient data for {symbol}. Skipping.")
@@ -953,12 +857,33 @@ class OpenRangeBreakoutBacktester:
 
 if __name__ == "__main__":
     print("\n" + "="*100)
-    print("OPEN RANGE BREAKOUT (ORB) STRATEGY - INTRADAY BACKTEST")
+    print("OPEN RANGE BREAKOUT (ORB) STRATEGY - INTRADAY BACKTEST WITH FYERS")
     print("="*100)
 
+    # IMPORTANT: Set your Fyers access token here
+    # Get your access token from Fyers API authentication
+    FYERS_ACCESS_TOKEN = "YOUR_FYERS_ACCESS_TOKEN_HERE"
+
+    # Validate access token
+    if FYERS_ACCESS_TOKEN == "YOUR_FYERS_ACCESS_TOKEN_HERE" or not FYERS_ACCESS_TOKEN:
+        print("\n❌ ERROR: Please set your Fyers access token in the FYERS_ACCESS_TOKEN variable")
+        print("   You can get your access token from Fyers API authentication")
+        print("   Visit: https://myapi.fyers.in/docsv3/#tag/Authentication\n")
+        exit(1)
+
+    # Define symbols to backtest (Fyers format: NSE:SYMBOL-EQ)
+    SYMBOLS = [
+        "NSE:SBIN-EQ",      # State Bank of India
+        "NSE:RELIANCE-EQ",  # Reliance Industries
+        "NSE:TCS-EQ",       # Tata Consultancy Services
+        "NSE:INFY-EQ",      # Infosys
+        "NSE:HDFCBANK-EQ"   # HDFC Bank
+    ]
+
     backtester = OpenRangeBreakoutBacktester(
-        data_folder="data/symbolupdate",
-        symbols=None,  # Auto-detect
+        fyers_access_token=FYERS_ACCESS_TOKEN,
+        symbols=SYMBOLS,
+        backtest_days=7,  # Last 7 days
 
         # Opening range parameters
         opening_range_minutes=15,  # First 15 minutes (9:15 - 9:30)
@@ -984,7 +909,7 @@ if __name__ == "__main__":
         # Trading rules
         initial_capital=100000,
         square_off_time="15:20",
-        tick_interval='1min',
+        tick_interval='5',  # 5 seconds resolution (Fyers format)
         last_entry_time="14:30",
         max_trades_per_day=3,
         min_risk_reward=1.5
