@@ -541,7 +541,7 @@ class OpenRangeBreakoutBacktester:
                                         'or_range': breakout_info['or_range']
                                     })
 
-                                    print(f"\n[ORB LONG ENTRY] {current_time.strftime('%H:%M:%S')}")
+                                    print(f"\n[ORB LONG ENTRY] {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                                     print(f"  Price: ₹{entry_price:.2f} | Stop: ₹{stop_loss:.2f} | Target: ₹{target:.2f}")
                                     print(f"  Shares: {shares} | R:R = 1:{risk_reward:.2f}")
                                     print(f"  Opening Range: ₹{breakout_info['orl']:.2f} - ₹{breakout_info['orh']:.2f}")
@@ -596,7 +596,7 @@ class OpenRangeBreakoutBacktester:
                                         'or_range': breakout_info['or_range']
                                     })
 
-                                    print(f"\n[ORB SHORT ENTRY] {current_time.strftime('%H:%M:%S')}")
+                                    print(f"\n[ORB SHORT ENTRY] {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                                     print(f"  Price: ₹{entry_price:.2f} | Stop: ₹{stop_loss:.2f} | Target: ₹{target:.2f}")
                                     print(f"  Shares: {shares} | R:R = 1:{risk_reward:.2f}")
                                     print(f"  Opening Range: ₹{breakout_info['orl']:.2f} - ₹{breakout_info['orh']:.2f}")
