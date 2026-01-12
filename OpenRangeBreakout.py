@@ -928,7 +928,7 @@ if __name__ == "__main__":
         fyers_client_id=FYERS_CLIENT_ID,
         fyers_access_token=FYERS_ACCESS_TOKEN,
         symbols=SYMBOLS,
-        backtest_days=7,  # Last 7 days
+        backtest_days=30,  # Last 7 days
 
         # Opening range parameters
         opening_range_minutes=15,  # First 15 minutes (9:15 - 9:30)
@@ -954,7 +954,7 @@ if __name__ == "__main__":
         # Trading rules
         initial_capital=100000,
         square_off_time="15:20",
-        tick_interval='5',  # 5 seconds resolution (Fyers format)
+        tick_interval='5S',  # 5 seconds resolution (Fyers format)
         last_entry_time="14:30",
         max_trades_per_day=3,
         min_risk_reward=1.5
