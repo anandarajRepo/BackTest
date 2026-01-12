@@ -944,11 +944,11 @@ if __name__ == "__main__":
         atr_period=14,
         stop_loss_atr_mult=1.5,
         target_atr_mult=3.0,
-        use_atr_targets=True,  # Use ATR for targets
+        use_atr_targets=False,  # Use ATR for targets
         target_range_mult=2.0,  # If using range-based targets
 
         # Trailing stops
-        use_trailing_stop=False,
+        use_trailing_stop=True,
         trailing_stop_atr_mult=1.0,
 
         # Trading rules
