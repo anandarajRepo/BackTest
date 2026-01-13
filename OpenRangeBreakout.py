@@ -17,6 +17,8 @@ class OpenRangeBreakoutBacktester:
     def __init__(self, fyers_client_id, fyers_access_token, symbols=None,
                  opening_range_minutes=15, breakout_confirmation_pct=0.2,
                  volume_threshold_mult=1.3, atr_period=14,
+                 momentum_period=14, momentum_threshold=0,
+                 rsi_period=14, rsi_oversold=30, rsi_overbought=70,
                  stop_loss_atr_mult=1.5, target_atr_mult=3.0,
                  target_range_mult=2.0, use_atr_targets=True,
                  trailing_stop_atr_mult=1.0, use_trailing_stop=False,
@@ -92,7 +94,13 @@ class OpenRangeBreakoutBacktester:
         - opening_range_minutes: Duration of opening range (default: 15)
         - breakout_confirmation_pct: % move beyond range (default: 0.2%)
         - volume_threshold_mult: Volume multiplier (default: 1.3x)
+        - false_breakout_candles: Candles to confirm breakout (default: 2)
         - atr_period: ATR calculation period (default: 14)
+        - momentum_period: Momentum calculation period (default: 14)
+        - momentum_threshold: Minimum momentum value for entry (default: 0)
+        - rsi_period: RSI calculation period (default: 14)
+        - rsi_oversold: RSI oversold level (default: 30)
+        - rsi_overbought: RSI overbought level (default: 70)
         - stop_loss_atr_mult: Stop loss in ATR multiples (default: 1.5)
         - target_atr_mult: Target in ATR multiples (default: 3.0)
         - target_range_mult: Target as multiple of opening range (default: 2.0)
@@ -101,7 +109,6 @@ class OpenRangeBreakoutBacktester:
         - use_trailing_stop: Enable trailing stops (default: False)
         - min_range_pct: Minimum range % for valid setup (default: 0.3%)
         - max_range_pct: Maximum range % for valid setup (default: 3.0%)
-        - false_breakout_candles: Candles to confirm breakout (default: 2)
         - last_entry_time: Last entry time (default: "14:30")
         - max_trades_per_day: Maximum trades per day (default: 3)
         - min_risk_reward: Minimum risk-reward ratio (default: 1.5)
@@ -131,8 +138,15 @@ class OpenRangeBreakoutBacktester:
         self.min_range_pct = min_range_pct / 100
         self.max_range_pct = max_range_pct / 100
 
-        # ATR parameters
+        # Technical indicator parameters
         self.atr_period = atr_period
+        self.momentum_period = momentum_period
+        self.momentum_threshold = momentum_threshold
+        self.rsi_period = rsi_period
+        self.rsi_oversold = rsi_oversold
+        self.rsi_overbought = rsi_overbought
+
+        # ATR-based stop loss and targets
         self.stop_loss_atr_mult = stop_loss_atr_mult
         self.target_atr_mult = target_atr_mult
         self.trailing_stop_atr_mult = trailing_stop_atr_mult
@@ -172,7 +186,10 @@ class OpenRangeBreakoutBacktester:
         print(f"  Range Validation: {min_range_pct}% - {max_range_pct}% of price")
         print(f"  Breakout Confirmation: {breakout_confirmation_pct}% move, {self.volume_threshold_mult}x volume")
         print(f"  False Breakout Filter: {self.false_breakout_candles} candles")
-        print(f"  ATR Period: {self.atr_period}")
+        print(f"  Technical Indicators:")
+        print(f"    - ATR Period: {self.atr_period}")
+        print(f"    - Momentum Period: {self.momentum_period} (Threshold: {self.momentum_threshold})")
+        print(f"    - RSI Period: {self.rsi_period} (Oversold: {self.rsi_oversold}, Overbought: {self.rsi_overbought})")
         print(f"  Stop Loss: {self.stop_loss_atr_mult}x ATR")
         print(f"  Target Method: {'ATR-based' if use_atr_targets else 'Range-based'}")
         if use_atr_targets:
@@ -271,6 +288,48 @@ class OpenRangeBreakoutBacktester:
         df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
 
         df['atr'] = df['tr'].ewm(span=self.atr_period, adjust=False).mean()
+
+        return df
+
+    def calculate_momentum(self, df):
+        """Calculate Momentum Indicator
+
+        Momentum measures the rate of change in price over a specified period.
+        Formula: Current Price - Price N periods ago
+
+        Positive momentum indicates upward price movement
+        Negative momentum indicates downward price movement
+        """
+        df['momentum'] = df['close'] - df['close'].shift(self.momentum_period)
+        return df
+
+    def calculate_rsi(self, df):
+        """Calculate Relative Strength Index (RSI)
+
+        RSI is a momentum oscillator that measures the speed and magnitude of price changes.
+        Formula: RSI = 100 - (100 / (1 + RS))
+        Where RS = Average Gain / Average Loss over the period
+
+        RSI ranges from 0 to 100:
+        - Above 70: Overbought (potential reversal down)
+        - Below 30: Oversold (potential reversal up)
+        """
+        # Calculate price changes
+        delta = df['close'].diff()
+
+        # Separate gains and losses
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+
+        # Calculate average gain and loss using exponential moving average
+        avg_gain = gain.ewm(span=self.rsi_period, adjust=False).mean()
+        avg_loss = loss.ewm(span=self.rsi_period, adjust=False).mean()
+
+        # Calculate RS (Relative Strength)
+        rs = avg_gain / avg_loss
+
+        # Calculate RSI
+        df['rsi'] = 100 - (100 / (1 + rs))
 
         return df
 
@@ -413,8 +472,10 @@ class OpenRangeBreakoutBacktester:
 
         self.combined_data[symbol] = df.copy()
 
-        # Calculate all indicators
+        # Calculate all technical indicators
         df = self.calculate_atr(df)
+        df = self.calculate_momentum(df)
+        df = self.calculate_rsi(df)
         df = self.identify_opening_range(df)
         df = self.detect_breakouts(df)
         df = self.generate_signals(df)
@@ -940,8 +1001,15 @@ if __name__ == "__main__":
         volume_threshold_mult=1.3,  # 1.3x average volume
         false_breakout_candles=2,  # Wait 2 candles for confirmation
 
+        # Technical indicators
+        atr_period=14,  # ATR period for volatility measurement
+        momentum_period=14,  # Momentum calculation period
+        momentum_threshold=0,  # Minimum momentum for entry (0 = disabled)
+        rsi_period=14,  # RSI calculation period
+        rsi_oversold=30,  # RSI oversold level
+        rsi_overbought=70,  # RSI overbought level
+
         # Risk management
-        atr_period=14,
         stop_loss_atr_mult=1.5,
         target_atr_mult=3.0,
         use_atr_targets=False,  # Use ATR for targets
