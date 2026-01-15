@@ -349,8 +349,20 @@ class SupertrendHeikinAshiBacktester:
         df['basic_lb'] = hl_avg - (self.supertrend_multiplier * df['atr'])
 
         # Initialize Supertrend columns
-        df['supertrend'] = 0.0
-        df['supertrend_direction'] = 1  # 1 = bullish, -1 = bearish
+        df['supertrend'] = np.nan
+        df['supertrend_direction'] = 0  # 1 = bullish, -1 = bearish, 0 = not set
+
+        # Set initial direction based on first candle
+        if len(df) > 0:
+            first_close = df['close'].iloc[0]
+            first_hl_avg = (df['high'].iloc[0] + df['low'].iloc[0]) / 2
+            # Start bearish if close is below average, otherwise bullish
+            if first_close < first_hl_avg:
+                df.loc[df.index[0], 'supertrend_direction'] = -1
+                df.loc[df.index[0], 'supertrend'] = df['basic_ub'].iloc[0]
+            else:
+                df.loc[df.index[0], 'supertrend_direction'] = 1
+                df.loc[df.index[0], 'supertrend'] = df['basic_lb'].iloc[0]
 
         # Calculate Supertrend
         for i in range(1, len(df)):
@@ -457,6 +469,60 @@ class SupertrendHeikinAshiBacktester:
         except:
             return False
 
+    def print_signal_diagnostics(self, df, symbol):
+        """Print diagnostic information about signals"""
+        print(f"\n📊 SIGNAL DIAGNOSTICS for {symbol}")
+        print(f"{'-'*100}")
+
+        # Count various signal conditions
+        total_rows = len(df)
+        st_buy_signals = df['st_buy_signal'].sum()
+        st_sell_signals = df['st_sell_signal'].sum()
+        ha_bullish_count = df['ha_bullish'].sum()
+        ha_bearish_count = df['ha_bearish'].sum()
+        ha_significant_count = df['ha_significant'].sum()
+        buy_signals = df['buy_signal'].sum()
+
+        # Count direction states
+        st_bullish_count = (df['supertrend_direction'] == 1).sum()
+        st_bearish_count = (df['supertrend_direction'] == -1).sum()
+
+        # Check signal conditions breakdown
+        st_buy_and_ha_bullish = (df['st_buy_signal'] & df['ha_bullish']).sum()
+        st_buy_and_ha_bullish_and_sig = (df['st_buy_signal'] & df['ha_bullish'] & df['ha_significant']).sum()
+
+        print(f"Total Rows: {total_rows}")
+        print(f"\nSupertrend:")
+        print(f"  Bullish Periods: {st_bullish_count} ({st_bullish_count/total_rows*100:.1f}%)")
+        print(f"  Bearish Periods: {st_bearish_count} ({st_bearish_count/total_rows*100:.1f}%)")
+        print(f"  Buy Signals (Bearish→Bullish): {st_buy_signals}")
+        print(f"  Sell Signals (Bullish→Bearish): {st_sell_signals}")
+
+        print(f"\nHeikin Ashi:")
+        print(f"  Bullish Candles: {ha_bullish_count} ({ha_bullish_count/total_rows*100:.1f}%)")
+        print(f"  Bearish Candles: {ha_bearish_count} ({ha_bearish_count/total_rows*100:.1f}%)")
+        print(f"  Significant Candles: {ha_significant_count} ({ha_significant_count/total_rows*100:.1f}%)")
+
+        print(f"\nCombined Signals:")
+        print(f"  ST Buy + HA Bullish: {st_buy_and_ha_bullish}")
+        print(f"  ST Buy + HA Bullish + Significant: {st_buy_and_ha_bullish_and_sig}")
+        print(f"  ✅ FINAL BUY SIGNALS: {buy_signals}")
+
+        # If no buy signals, show sample of when ST changed to bullish
+        if buy_signals == 0 and st_buy_signals > 0:
+            print(f"\n⚠️  No buy signals generated! Let's check why...")
+            print(f"\nSample ST Buy Signal instances (first 3):")
+            st_buy_rows = df[df['st_buy_signal']].head(3)
+            for idx, row in st_buy_rows.iterrows():
+                print(f"\n  Time: {idx}")
+                print(f"    ST Direction: {row['supertrend_direction']}")
+                print(f"    HA Bullish: {row['ha_bullish']}")
+                print(f"    HA Significant: {row['ha_significant']}")
+                print(f"    HA Body: {row['ha_body']:.4f}")
+                print(f"    Close: {row['close']:.2f}, ST: {row['supertrend']:.2f}")
+
+        print(f"{'-'*100}")
+
     def backtest_single_symbol(self, symbol):
         """Backtest strategy for a single symbol"""
         print(f"\n{'='*100}")
@@ -478,6 +544,9 @@ class SupertrendHeikinAshiBacktester:
         df = self.calculate_supertrend(df)
         df = self.calculate_atr(df)  # Recalculate ATR with atr_period for trailing stops
         df = self.generate_signals(df)
+
+        # Diagnostic output for signal analysis
+        self.print_signal_diagnostics(df, symbol)
 
         # Add trading day info
         df['trading_day'] = df.index.date
