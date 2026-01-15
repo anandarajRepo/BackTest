@@ -16,7 +16,8 @@ class SupertrendTrailingStopBacktester:
                  supertrend_period=10, supertrend_multiplier=3.0,
                  initial_capital=100000, square_off_time="15:20",
                  last_entry_time="14:30", min_data_points=100,
-                 tick_interval=None, max_trades_per_day=5):
+                 tick_interval=None, max_trades_per_day=5,
+                 trailing_stop_pct=3.0):
         """
         Supertrend Trailing Stop Strategy
 
@@ -31,16 +32,16 @@ class SupertrendTrailingStopBacktester:
         4. Max trades per day not exceeded
 
         EXIT CONDITIONS (ANY triggers exit):
-        1. Price closes below Supertrend line (trailing stop hit)
+        1. Price drops 3% below highest price since entry (trailing stop hit)
         2. 3:20 PM square-off (mandatory end-of-day exit)
 
         KEY CONCEPT:
         ------------
-        The Supertrend line acts as a dynamic trailing stop that:
-        - Automatically adjusts with market volatility (via ATR)
-        - Moves up as the trend progresses (but never down in uptrend)
+        This strategy uses a fixed 3% trailing stop loss:
+        - Tracks the highest price achieved since entry
+        - Exit triggered when price drops 3% below the highest price
+        - Locks in profits while allowing trend continuation
         - Provides clear, objective exit points
-        - Locks in profits while giving room for trend continuation
 
         Parameters:
         -----------
@@ -54,6 +55,7 @@ class SupertrendTrailingStopBacktester:
         - min_data_points: Minimum data points per symbol (default: 100)
         - tick_interval: Time interval for resampling (e.g., '30s', '1min', None for raw)
         - max_trades_per_day: Maximum trades allowed per day (default: 5)
+        - trailing_stop_pct: Trailing stop loss percentage (default: 3.0%)
         """
         self.data_folder = data_folder
         self.db_files = self.find_database_files()
@@ -65,6 +67,7 @@ class SupertrendTrailingStopBacktester:
         self.min_data_points = min_data_points
         self.tick_interval = tick_interval
         self.max_trades_per_day = max_trades_per_day
+        self.trailing_stop_pct = trailing_stop_pct
         self.results = {}
         self.combined_data = {}
 
@@ -77,15 +80,16 @@ class SupertrendTrailingStopBacktester:
         print(f"Strategy Parameters:")
         print(f"  Tick Interval: {self.tick_interval if self.tick_interval else 'Raw tick data (no resampling)'}")
         print(f"  Supertrend Period: {self.supertrend_period}, Multiplier: {self.supertrend_multiplier}x")
+        print(f"  Trailing Stop: {self.trailing_stop_pct}%")
         print(f"  Max Trades Per Day: {self.max_trades_per_day}")
         print(f"  Last Entry Time: {last_entry_time} IST")
         print(f"  Square-off Time: {square_off_time} IST")
         print(f"  Initial Capital: ₹{self.initial_capital:,}")
         print(f"{'='*100}")
-        print(f"\n💡 KEY CONCEPT: Supertrend line acts as dynamic trailing stop")
+        print(f"\n💡 KEY CONCEPT: {self.trailing_stop_pct}% trailing stop loss")
         print(f"   - Entry: When price crosses above Supertrend")
-        print(f"   - Exit: When price closes below Supertrend (stop hit)")
-        print(f"   - Supertrend moves up with trend, locking in profits")
+        print(f"   - Exit: When price drops {self.trailing_stop_pct}% below highest price since entry")
+        print(f"   - Trailing stop moves up with price, locking in profits")
         print(f"{'='*100}")
 
         # Auto-detect symbols if not provided
@@ -393,7 +397,7 @@ class SupertrendTrailingStopBacktester:
         Generate trading signals using Supertrend
 
         BUY SIGNAL: Supertrend turns bullish (price crosses above Supertrend line)
-        SELL SIGNAL: Price closes below Supertrend line (trailing stop hit)
+        SELL SIGNAL: Price drops 3% below highest price since entry (trailing stop hit)
         """
         # BUY SIGNAL: Supertrend just turned bullish
         df['buy_signal'] = (
@@ -401,10 +405,6 @@ class SupertrendTrailingStopBacktester:
             (~df['supertrend'].isna()) &               # Valid Supertrend
             (~df['atr'].isna())                        # Valid ATR
         )
-
-        # SELL SIGNAL: Price crosses below Supertrend (in position)
-        # This will be checked in the backtest loop for active positions
-        df['price_below_st'] = df['close'] < df['supertrend']
 
         return df
 
@@ -495,6 +495,7 @@ class SupertrendTrailingStopBacktester:
         position = 0  # 0: no position, 1: long
         entry_price = 0
         entry_supertrend = 0  # Store Supertrend value at entry
+        highest_price = 0  # Track highest price since entry for trailing stop
         trades = []
         entry_time = None
         trade_number = 0
@@ -519,6 +520,7 @@ class SupertrendTrailingStopBacktester:
                 shares = int(cash / entry_price) if entry_price > 0 else 0
                 trade_pnl = shares * (current_price - entry_price)
                 trade_return = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+                trailing_stop_price = highest_price * (1 - self.trailing_stop_pct / 100)
 
                 trade_number += 1
                 duration = (current_time - entry_time).total_seconds() / 60
@@ -526,7 +528,7 @@ class SupertrendTrailingStopBacktester:
                 print(f"\n[Trade #{trade_number}] SQUARE-OFF @ {current_time.strftime('%H:%M:%S')}")
                 print(f"  Entry:  {entry_time.strftime('%Y-%m-%d %H:%M:%S')} @ ₹{entry_price:.2f}")
                 print(f"  Exit:   {current_time.strftime('%Y-%m-%d %H:%M:%S')} @ ₹{current_price:.2f}")
-                print(f"  Supertrend Stop: ₹{current_supertrend:.2f} (not hit)")
+                print(f"  Highest: ₹{highest_price:.2f}, Trailing Stop: ₹{trailing_stop_price:.2f} (not hit)")
                 print(f"  Duration: {duration:.1f} min | P&L: ₹{trade_pnl:.2f} ({trade_return:+.2f}%)")
                 print(f"  {'✅ PROFIT' if trade_pnl > 0 else '❌ LOSS'}")
 
@@ -536,6 +538,8 @@ class SupertrendTrailingStopBacktester:
                     'exit_time': current_time,
                     'entry_price': entry_price,
                     'exit_price': current_price,
+                    'highest_price': highest_price,
+                    'trailing_stop_price': trailing_stop_price,
                     'entry_supertrend': entry_supertrend,
                     'exit_supertrend': current_supertrend,
                     'shares': shares,
@@ -558,23 +562,32 @@ class SupertrendTrailingStopBacktester:
                 entry_price = current_price
                 entry_time = current_time
                 entry_supertrend = current_supertrend
+                highest_price = current_price  # Initialize highest price at entry
                 daily_trades[current_day] += 1
 
+                trailing_stop_price = highest_price * (1 - self.trailing_stop_pct / 100)
                 print(f"\n🟢 ENTRY SIGNAL #{daily_trades[current_day]}")
                 print(f"  Time: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 print(f"  Entry Price: ₹{entry_price:.2f}")
-                print(f"  Supertrend Stop: ₹{entry_supertrend:.2f} (initial)")
+                print(f"  Initial Trailing Stop: ₹{trailing_stop_price:.2f} ({self.trailing_stop_pct}% below entry)")
                 print(f"  ATR: ₹{current_atr:.2f}")
 
             # Exit signals (for open positions)
             elif position == 1:
+                # Update highest price if current price is higher
+                if current_price > highest_price:
+                    highest_price = current_price
+
+                # Calculate trailing stop price (3% below highest price)
+                trailing_stop_price = highest_price * (1 - self.trailing_stop_pct / 100)
+
                 exit_signal = False
                 exit_reason = ""
 
-                # Check if price closed below Supertrend line (trailing stop hit)
-                if current_price < current_supertrend:
+                # Check if price hit trailing stop (dropped 3% below highest)
+                if current_price < trailing_stop_price:
                     exit_signal = True
-                    exit_reason = "SUPERTREND_TRAILING_STOP"
+                    exit_reason = "TRAILING_STOP"
 
                 if exit_signal:
                     shares = int(cash / entry_price) if entry_price > 0 else 0
@@ -584,13 +597,14 @@ class SupertrendTrailingStopBacktester:
                     trade_number += 1
                     duration = (current_time - entry_time).total_seconds() / 60
 
-                    # Calculate how much the Supertrend moved up (if at all)
-                    st_movement = current_supertrend - entry_supertrend
+                    # Calculate how much profit was locked in
+                    max_potential_return = ((highest_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
 
-                    print(f"\n[Trade #{trade_number}] {exit_reason}")
+                    print(f"\n[Trade #{trade_number}] {exit_reason} ({self.trailing_stop_pct}% HIT)")
                     print(f"  Entry:  {entry_time.strftime('%Y-%m-%d %H:%M:%S')} @ ₹{entry_price:.2f}")
+                    print(f"  Highest: ₹{highest_price:.2f} (Max potential: {max_potential_return:+.2f}%)")
                     print(f"  Exit:   {current_time.strftime('%Y-%m-%d %H:%M:%S')} @ ₹{current_price:.2f}")
-                    print(f"  Entry ST: ₹{entry_supertrend:.2f} → Exit ST: ₹{current_supertrend:.2f} (moved {st_movement:+.2f})")
+                    print(f"  Trailing Stop: ₹{trailing_stop_price:.2f}")
                     print(f"  Duration: {duration:.1f} min | P&L: ₹{trade_pnl:.2f} ({trade_return:+.2f}%)")
                     print(f"  {'✅ PROFIT' if trade_pnl > 0 else '❌ LOSS'}")
 
@@ -600,9 +614,11 @@ class SupertrendTrailingStopBacktester:
                         'exit_time': current_time,
                         'entry_price': entry_price,
                         'exit_price': current_price,
+                        'highest_price': highest_price,
+                        'trailing_stop_price': trailing_stop_price,
+                        'max_potential_return': max_potential_return,
                         'entry_supertrend': entry_supertrend,
                         'exit_supertrend': current_supertrend,
-                        'st_movement': st_movement,
                         'shares': shares,
                         'duration_minutes': duration,
                         'pnl': trade_pnl,
