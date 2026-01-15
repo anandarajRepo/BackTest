@@ -754,7 +754,8 @@ class SupertrendHeikinAshiBacktester:
         print(f"Symbols Tested: {len(self.results)}")
         print(f"Total Trades: {total_trades}")
         print(f"Total P&L: ₹{total_pnl:.2f}")
-        print(f"Overall Win Rate: {(winning_trades / total_trades * 100):.1f}%")
+        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0.0
+        print(f"Overall Win Rate: {win_rate:.1f}%")
         print(f"Profitable Symbols: {profitable_symbols}/{len(self.results)}")
 
         # Export to CSV
