@@ -15,9 +15,9 @@ class SupertrendTrailingStopBacktester:
     def __init__(self, data_folder="data", symbols=None,
                  supertrend_period=10, supertrend_multiplier=3.0,
                  initial_capital=100000, square_off_time="15:20",
-                 last_entry_time="14:30", min_data_points=100,
-                 tick_interval=None, max_trades_per_day=5,
-                 trailing_stop_pct=3.0):
+                 last_entry_time="14:30", market_start_time="9:15",
+                 min_data_points=100, tick_interval=None,
+                 max_trades_per_day=5, trailing_stop_pct=3.0):
         """
         Supertrend Trailing Stop Strategy
 
@@ -26,10 +26,11 @@ class SupertrendTrailingStopBacktester:
         This strategy uses the Supertrend indicator line as a dynamic trailing stop loss.
 
         ENTRY CONDITIONS (ALL must be true):
-        1. Supertrend turns bullish (price crosses above Supertrend line)
-        2. Valid Supertrend and ATR values exist
-        3. Before last entry time (avoid late entries)
-        4. Max trades per day not exceeded
+        1. After market start time (9:15 AM - market opening)
+        2. Supertrend turns bullish (price crosses above Supertrend line)
+        3. Valid Supertrend and ATR values exist
+        4. Before last entry time (avoid late entries)
+        5. Max trades per day not exceeded
 
         EXIT CONDITIONS (ANY triggers exit):
         1. Price drops 3% below highest price since entry (trailing stop hit)
@@ -52,6 +53,7 @@ class SupertrendTrailingStopBacktester:
         - initial_capital: Starting capital per symbol (default: 100000)
         - square_off_time: Time to square off (HH:MM format, default: "15:20")
         - last_entry_time: Last time to enter new trades (default: "14:30")
+        - market_start_time: Market opening time (HH:MM format, default: "9:15")
         - min_data_points: Minimum data points per symbol (default: 100)
         - tick_interval: Time interval for resampling (e.g., '30s', '1min', None for raw)
         - max_trades_per_day: Maximum trades allowed per day (default: 5)
@@ -64,6 +66,7 @@ class SupertrendTrailingStopBacktester:
         self.initial_capital = initial_capital
         self.square_off_time = self.parse_square_off_time(square_off_time)
         self.last_entry_time = self.parse_square_off_time(last_entry_time)
+        self.market_start_time = self.parse_square_off_time(market_start_time)
         self.min_data_points = min_data_points
         self.tick_interval = tick_interval
         self.max_trades_per_day = max_trades_per_day
@@ -82,12 +85,13 @@ class SupertrendTrailingStopBacktester:
         print(f"  Supertrend Period: {self.supertrend_period}, Multiplier: {self.supertrend_multiplier}x")
         print(f"  Trailing Stop: {self.trailing_stop_pct}%")
         print(f"  Max Trades Per Day: {self.max_trades_per_day}")
+        print(f"  Market Start Time: {market_start_time} IST")
         print(f"  Last Entry Time: {last_entry_time} IST")
         print(f"  Square-off Time: {square_off_time} IST")
         print(f"  Initial Capital: ₹{self.initial_capital:,}")
         print(f"{'='*100}")
         print(f"\n💡 KEY CONCEPT: {self.trailing_stop_pct}% trailing stop loss")
-        print(f"   - Entry: When price crosses above Supertrend")
+        print(f"   - Entry: When price crosses above Supertrend (after {market_start_time})")
         print(f"   - Exit: When price drops {self.trailing_stop_pct}% below highest price since entry")
         print(f"   - Trailing stop moves up with price, locking in profits")
         print(f"{'='*100}")
@@ -424,6 +428,14 @@ class SupertrendTrailingStopBacktester:
         except:
             return False
 
+    def is_before_market_start(self, timestamp):
+        """Check if it's before market start time"""
+        try:
+            current_time = timestamp.time()
+            return current_time < self.market_start_time
+        except:
+            return False
+
     def print_signal_diagnostics(self, df, symbol):
         """Print diagnostic information about signals"""
         print(f"\n📊 SIGNAL DIAGNOSTICS for {symbol}")
@@ -495,6 +507,7 @@ class SupertrendTrailingStopBacktester:
         df['trading_day'] = df.index.date
         df['is_square_off'] = df.index.map(self.is_square_off_time)
         df['is_last_entry'] = df.index.map(self.is_last_entry_time)
+        df['is_before_market_start'] = df.index.map(self.is_before_market_start)
 
         # Initialize trading variables
         cash = self.initial_capital
@@ -515,6 +528,7 @@ class SupertrendTrailingStopBacktester:
             current_atr = df.iloc[i]['atr']
             is_square_off = df.iloc[i]['is_square_off']
             is_last_entry = df.iloc[i]['is_last_entry']
+            is_before_market_start = df.iloc[i]['is_before_market_start']
             current_day = df.iloc[i]['trading_day']
 
             # Initialize daily trade counter
@@ -559,7 +573,7 @@ class SupertrendTrailingStopBacktester:
                 position = 0
 
             # Entry signal
-            elif position == 0 and df.iloc[i]['buy_signal'] and not is_square_off and not is_last_entry:
+            elif position == 0 and df.iloc[i]['buy_signal'] and not is_square_off and not is_last_entry and not is_before_market_start:
                 # Check max trades per day limit
                 if daily_trades[current_day] >= self.max_trades_per_day:
                     continue
@@ -890,8 +904,9 @@ if __name__ == "__main__":
         supertrend_period=10,  # ATR period for Supertrend
         supertrend_multiplier=3.0,  # Multiplier for Supertrend bands
         initial_capital=100000,
-        square_off_time="15:20",
-        last_entry_time="14:30",
+        market_start_time="9:15",  # Market opening time (no signals before this)
+        last_entry_time="14:30",  # Last time to enter new trades
+        square_off_time="15:20",  # End-of-day square-off time
         max_trades_per_day=5,  # Allow more trades since this is a pure trend-following system
         tick_interval='30s'  # Options: None (raw), '5s', '10s', '30s', '1min', '5min'
     )
