@@ -812,16 +812,16 @@ class SupertrendTrailingStopBacktester:
             db_symbols = self.get_symbols_from_db(db_file)
 
             # Filter to only symbols we want to test
-            symbols_to_test = [s for s in self.symbols if s in db_symbols]
+            # symbols_to_test = [s for s in self.symbols if s in db_symbols]
 
-            if not symbols_to_test:
+            if not db_symbols:
                 print(f"⚠️  No matching symbols found in {db_name}")
                 continue
 
-            print(f"Found {len(symbols_to_test)} symbols to test in this database")
+            print(f"Found {len(db_symbols)} symbols to test in this database")
 
             # Test each symbol in this database
-            for symbol in symbols_to_test:
+            for symbol in db_symbols:
                 try:
                     result = self.backtest_single_symbol_single_db(symbol, db_file)
                     if result:
