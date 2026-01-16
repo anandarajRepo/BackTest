@@ -14,10 +14,10 @@ warnings.filterwarnings('ignore')
 class SupertrendTrailingStopBacktester:
     def __init__(self, data_folder="data", symbols=None,
                  supertrend_period=10, supertrend_multiplier=3.0,
-                 initial_capital=100000, square_off_time="15:20",
-                 last_entry_time="14:30", market_start_time="9:15",
+                 initial_capital=100000, square_off_time="15:18",
+                 last_entry_time="15:00", market_start_time="9:15",
                  min_data_points=100, tick_interval=None,
-                 max_trades_per_day=5, trailing_stop_pct=3.0):
+                 max_trades_per_day=5, trailing_stop_pct=6.0):
         """
         Supertrend Trailing Stop Strategy
 
@@ -908,7 +908,7 @@ if __name__ == "__main__":
         last_entry_time="14:30",  # Last time to enter new trades
         square_off_time="15:20",  # End-of-day square-off time
         max_trades_per_day=5,  # Allow more trades since this is a pure trend-following system
-        tick_interval='30s'  # Options: None (raw), '5s', '10s', '30s', '1min', '5min'
+        tick_interval='5s'  # Options: None (raw), '5s', '10s', '30s', '1min', '5min'
     )
 
     backtester.run_backtest()
