@@ -400,14 +400,28 @@ class SupertrendTrailingStopBacktester:
         """
         Generate trading signals using Supertrend
 
-        BUY SIGNAL: Supertrend turns bullish (price crosses above Supertrend line)
+        BUY SIGNAL: Supertrend is bullish AND we're in valid trading hours
         SELL SIGNAL: Price drops 3% below highest price since entry (trailing stop hit)
+
+        IMPORTANT: Buy signals remain active as long as Supertrend stays bullish
+        and we're within valid trading hours. This ensures we don't miss trades
+        when Supertrend crossover happens before market hours.
         """
-        # BUY SIGNAL: Supertrend just turned bullish
+        # Detect Supertrend crossover from bearish to bullish
+        df['st_crossover_bullish'] = df['st_buy_signal']
+
+        # Create a flag for when Supertrend is bullish
+        df['st_is_bullish'] = df['supertrend_direction'] == 1
+
+        # BUY SIGNAL: Supertrend is bullish (not just crossover) AND valid trading time
+        # This ensures signals persist until taken or trend reverses
         df['buy_signal'] = (
-            (df['st_buy_signal']) &                    # Supertrend just turned bullish
+            (df['st_is_bullish']) &                    # Supertrend is currently bullish
             (~df['supertrend'].isna()) &               # Valid Supertrend
-            (~df['atr'].isna())                        # Valid ATR
+            (~df['atr'].isna()) &                      # Valid ATR
+            (~df['is_before_market_start']) &          # After market start time (9:15 AM)
+            (~df['is_last_entry']) &                   # Before last entry time
+            (~df['is_square_off'])                     # Before square-off time
         )
 
         return df
@@ -443,7 +457,7 @@ class SupertrendTrailingStopBacktester:
 
         # Count various signal conditions
         total_rows = len(df)
-        st_buy_signals = df['st_buy_signal'].sum()
+        st_crossover_bullish = df['st_crossover_bullish'].sum()
         st_sell_signals = df['st_sell_signal'].sum()
         buy_signals = df['buy_signal'].sum()
 
@@ -451,26 +465,48 @@ class SupertrendTrailingStopBacktester:
         st_bullish_count = (df['supertrend_direction'] == 1).sum()
         st_bearish_count = (df['supertrend_direction'] == -1).sum()
 
+        # Count time-based filters
+        before_market_count = df['is_before_market_start'].sum()
+        after_last_entry_count = df['is_last_entry'].sum()
+        square_off_count = df['is_square_off'].sum()
+
+        # Count buy signals during valid hours
+        valid_buy_signals = df[df['buy_signal']].copy()
+
         print(f"Total Rows: {total_rows}")
         print(f"\nSupertrend:")
         print(f"  Bullish Periods: {st_bullish_count} ({st_bullish_count/total_rows*100:.1f}%)")
         print(f"  Bearish Periods: {st_bearish_count} ({st_bearish_count/total_rows*100:.1f}%)")
-        print(f"  Buy Signals (Bearish→Bullish): {st_buy_signals}")
-        print(f"  Sell Signals (Bullish→Bearish): {st_sell_signals}")
+        print(f"  Bullish Crossovers (Bearish→Bullish): {st_crossover_bullish}")
+        print(f"  Bearish Crossovers (Bullish→Bearish): {st_sell_signals}")
 
-        print(f"\nCombined Signals:")
-        print(f"  ✅ FINAL BUY SIGNALS: {buy_signals}")
+        print(f"\nTime Filters:")
+        print(f"  Before Market Start (< 9:15 AM): {before_market_count} rows")
+        print(f"  After Last Entry Time: {after_last_entry_count} rows")
+        print(f"  Square-off Period: {square_off_count} rows")
+
+        print(f"\nFinal Signals:")
+        print(f"  ✅ BUY SIGNALS (Valid Trading Hours): {buy_signals} total candles")
+
+        # Show first few buy signals
+        if buy_signals > 0:
+            print(f"\n  First 5 Buy Signal periods:")
+            # Find transitions to buy_signal = True
+            buy_signal_starts = df[df['buy_signal'] & (~df['buy_signal'].shift(1).fillna(False))].head(5)
+            for idx, row in buy_signal_starts.iterrows():
+                print(f"    {idx.strftime('%Y-%m-%d %H:%M:%S')} - Price: ₹{row['close']:.2f}, ST: ₹{row['supertrend']:.2f}")
 
         # If no buy signals, show why
-        if buy_signals == 0 and st_buy_signals > 0:
-            print(f"\n⚠️  No buy signals generated! Let's check why...")
-            print(f"\nSample ST Buy Signal instances (first 3):")
-            st_buy_rows = df[df['st_buy_signal']].head(3)
+        if buy_signals == 0 and st_crossover_bullish > 0:
+            print(f"\n⚠️  No buy signals generated despite {st_crossover_bullish} Supertrend crossovers!")
+            print(f"\nSample Crossover instances (first 3):")
+            st_buy_rows = df[df['st_crossover_bullish']].head(3)
             for idx, row in st_buy_rows.iterrows():
                 print(f"\n  Time: {idx}")
-                print(f"    ST Direction: {row['supertrend_direction']}")
+                print(f"    Before Market Start: {row['is_before_market_start']}")
+                print(f"    After Last Entry: {row['is_last_entry']}")
+                print(f"    Square-off: {row['is_square_off']}")
                 print(f"    Close: {row['close']:.2f}, ST: {row['supertrend']:.2f}")
-                print(f"    ATR: {row['atr']:.2f}")
 
         print(f"{'-'*100}")
 
@@ -498,16 +534,18 @@ class SupertrendTrailingStopBacktester:
 
         # Calculate all indicators
         df = self.calculate_supertrend(df)
-        df = self.generate_signals(df)
 
-        # Diagnostic output for signal analysis
-        self.print_signal_diagnostics(df, symbol)
-
-        # Add trading day info
+        # Add trading day info BEFORE signal generation
         df['trading_day'] = df.index.date
         df['is_square_off'] = df.index.map(self.is_square_off_time)
         df['is_last_entry'] = df.index.map(self.is_last_entry_time)
         df['is_before_market_start'] = df.index.map(self.is_before_market_start)
+
+        # Generate signals (now has access to time columns)
+        df = self.generate_signals(df)
+
+        # Diagnostic output for signal analysis
+        self.print_signal_diagnostics(df, symbol)
 
         # Initialize trading variables
         cash = self.initial_capital
@@ -519,6 +557,7 @@ class SupertrendTrailingStopBacktester:
         entry_time = None
         trade_number = 0
         daily_trades = {}  # Track trades per day
+        last_entry_signal_idx = -999  # Track last signal index to avoid re-entry on same signal
 
         # Backtest loop
         for i in range(len(df)):
@@ -572,8 +611,26 @@ class SupertrendTrailingStopBacktester:
 
                 position = 0
 
-            # Entry signal
-            elif position == 0 and df.iloc[i]['buy_signal'] and not is_square_off and not is_last_entry and not is_before_market_start:
+            # Entry signal - enter on crossover OR on first valid signal after market hours
+            elif position == 0 and df.iloc[i]['buy_signal']:
+                # Prevent re-entry during the same bullish period
+                # Only enter if this is a new crossover or first signal after becoming valid
+                prev_st_direction = df.iloc[i-1]['supertrend_direction'] if i > 0 else -1
+                current_st_direction = df.iloc[i]['supertrend_direction']
+
+                # Enter only if:
+                # 1. Supertrend just turned bullish (crossover), OR
+                # 2. First time we see buy_signal=True (e.g., crossover was before market hours, now we're in valid time)
+                is_new_signal = False
+                if i > 0:
+                    prev_buy_signal = df.iloc[i-1]['buy_signal']
+                    is_new_signal = (not prev_buy_signal) and df.iloc[i]['buy_signal']
+                else:
+                    is_new_signal = df.iloc[i]['buy_signal']
+
+                if not is_new_signal:
+                    continue
+
                 # Check max trades per day limit
                 if daily_trades[current_day] >= self.max_trades_per_day:
                     continue
@@ -584,11 +641,13 @@ class SupertrendTrailingStopBacktester:
                 entry_supertrend = current_supertrend
                 highest_price = current_price  # Initialize highest price at entry
                 daily_trades[current_day] += 1
+                last_entry_signal_idx = i
 
                 trailing_stop_price = highest_price * (1 - self.trailing_stop_pct / 100)
                 print(f"\n🟢 ENTRY SIGNAL #{daily_trades[current_day]}")
                 print(f"  Time: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 print(f"  Entry Price: ₹{entry_price:.2f}")
+                print(f"  Supertrend: ₹{entry_supertrend:.2f}")
                 print(f"  Initial Trailing Stop: ₹{trailing_stop_price:.2f} ({self.trailing_stop_pct}% below entry)")
                 print(f"  ATR: ₹{current_atr:.2f}")
 
