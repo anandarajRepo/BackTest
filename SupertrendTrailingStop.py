@@ -462,21 +462,27 @@ class SupertrendTrailingStopBacktester:
 
         print(f"{'-'*100}")
 
-    def backtest_single_symbol(self, symbol):
-        """Backtest strategy for a single symbol"""
+    def backtest_single_symbol_single_db(self, symbol, db_file):
+        """Backtest strategy for a single symbol from a single database file"""
+        db_name = os.path.basename(db_file)
         print(f"\n{'='*100}")
-        print(f"Backtesting: {symbol}")
+        print(f"Backtesting: {symbol} | Database: {db_name}")
         print(f"{'='*100}")
 
-        # Load data
-        df = self.load_data_from_all_databases(symbol)
+        # Load data from single database only
+        df = self.load_data_from_single_db(db_file, symbol)
 
         if df is None or len(df) < self.supertrend_period * 3:
-            print(f"Insufficient data for {symbol}. Skipping.")
+            print(f"Insufficient data for {symbol} in {db_name}. Skipping.")
             return None
 
-        # Store combined data
-        self.combined_data[symbol] = df.copy()
+        # Resample if needed
+        if self.tick_interval is not None:
+            df = self.resample_tick_data(df, self.tick_interval)
+
+        if df is None or len(df) < self.supertrend_period * 3:
+            print(f"Insufficient data after resampling for {symbol} in {db_name}. Skipping.")
+            return None
 
         # Calculate all indicators
         df = self.calculate_supertrend(df)
@@ -634,10 +640,26 @@ class SupertrendTrailingStopBacktester:
 
         return {
             'symbol': symbol,
+            'db_file': db_name,
             'data': df,
             'trades': trades,
             'metrics': metrics
         }
+
+    def get_symbols_from_db(self, db_file):
+        """Get list of symbols available in a specific database file"""
+        try:
+            conn = sqlite3.connect(db_file)
+            query = """
+            SELECT DISTINCT symbol
+            FROM market_data
+            """
+            symbols_df = pd.read_sql_query(query, conn)
+            conn.close()
+            return set(symbols_df['symbol'].tolist())
+        except Exception as e:
+            print(f"Error reading symbols from {db_file}: {e}")
+            return set()
 
     def calculate_metrics(self, trades):
         """Calculate performance metrics"""
@@ -700,34 +722,66 @@ class SupertrendTrailingStopBacktester:
         }
 
     def run_backtest(self):
-        """Run backtest for all symbols"""
+        """Run backtest for all symbols - processing one database file at a time"""
         print(f"\n{'='*100}")
         print("STARTING SUPERTREND TRAILING STOP BACKTEST")
+        print("Processing database files one at a time (memory efficient)")
         print(f"{'='*100}")
 
-        for symbol in self.symbols:
-            try:
-                result = self.backtest_single_symbol(symbol)
-                if result:
-                    self.results[symbol] = result
-            except Exception as e:
-                print(f"Error backtesting {symbol}: {e}")
+        # Process each database file separately
+        for db_file in self.db_files:
+            db_name = os.path.basename(db_file)
+            print(f"\n{'='*100}")
+            print(f"📂 Processing Database: {db_name}")
+            print(f"{'='*100}")
 
-        # Print summary
+            # Get symbols available in this database
+            db_symbols = self.get_symbols_from_db(db_file)
+
+            # Filter to only symbols we want to test
+            symbols_to_test = [s for s in self.symbols if s in db_symbols]
+
+            if not symbols_to_test:
+                print(f"⚠️  No matching symbols found in {db_name}")
+                continue
+
+            print(f"Found {len(symbols_to_test)} symbols to test in this database")
+
+            # Test each symbol in this database
+            for symbol in symbols_to_test:
+                try:
+                    result = self.backtest_single_symbol_single_db(symbol, db_file)
+                    if result:
+                        # Store results with composite key (symbol + db_file)
+                        result_key = f"{symbol}|{db_name}"
+                        self.results[result_key] = result
+                except Exception as e:
+                    print(f"Error backtesting {symbol} in {db_name}: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            # Print summary for this database
+            self.print_database_summary(db_name)
+
+        # Print overall summary
         self.print_summary()
 
-    def print_summary(self):
-        """Print overall summary"""
-        if not self.results:
-            print("\nNo results to display.")
+    def print_database_summary(self, db_name):
+        """Print summary for a specific database file"""
+        # Filter results for this database
+        db_results = {k: v for k, v in self.results.items() if v['db_file'] == db_name}
+
+        if not db_results:
+            print(f"\n⚠️  No results for {db_name}")
             return
 
         print(f"\n{'='*100}")
-        print("BACKTEST SUMMARY - ALL SYMBOLS")
+        print(f"DATABASE SUMMARY: {db_name}")
         print(f"{'='*100}")
 
         summary_data = []
-        for symbol, result in self.results.items():
+        for result_key, result in db_results.items():
+            symbol = result['symbol']
             metrics = result['metrics']
             clean_symbol = symbol.split(':')[1].replace('-EQ', '') if ':' in symbol else symbol.replace('-EQ', '')
 
@@ -740,8 +794,61 @@ class SupertrendTrailingStopBacktester:
                 'Avg Return': f"{metrics['avg_return']:.2f}%",
                 'Avg Duration': f"{metrics['avg_duration']:.1f} min",
                 'ST Exits': metrics['trailing_stop_exits'],
-                'Square-off': metrics['square_off_exits'],
-                'Avg ST Move': f"₹{metrics['avg_st_movement']:.2f}"
+                'Square-off': metrics['square_off_exits']
+            })
+
+        if summary_data:
+            summary_df = pd.DataFrame(summary_data)
+            print(summary_df.to_string(index=False))
+
+            # Database statistics
+            total_trades = sum(r['metrics']['total_trades'] for r in db_results.values())
+            total_pnl = sum(r['metrics']['total_pnl'] for r in db_results.values())
+            winning_trades = sum(r['metrics']['winning_trades'] for r in db_results.values())
+            profitable_symbols = sum(1 for r in db_results.values() if r['metrics']['total_pnl'] > 0)
+
+            print(f"\nDatabase Statistics:")
+            print(f"  Symbols Tested: {len(db_results)}")
+            print(f"  Total Trades: {total_trades}")
+            print(f"  Total P&L: ₹{total_pnl:.2f}")
+            if total_trades > 0:
+                win_rate = (winning_trades / total_trades * 100)
+                print(f"  Win Rate: {win_rate:.1f}%")
+            print(f"  Profitable Symbols: {profitable_symbols}/{len(db_results)}")
+
+            # Export database-specific CSV
+            csv_filename = f'supertrend_results_{db_name.replace(".db", "")}.csv'
+            summary_df.to_csv(csv_filename, index=False)
+            print(f"\n✅ Database results exported to: {csv_filename}")
+
+    def print_summary(self):
+        """Print overall summary across all databases"""
+        if not self.results:
+            print("\nNo results to display.")
+            return
+
+        print(f"\n{'='*100}")
+        print("BACKTEST SUMMARY - ALL DATABASES & SYMBOLS")
+        print(f"{'='*100}")
+
+        summary_data = []
+        for result_key, result in self.results.items():
+            symbol = result['symbol']
+            db_file = result['db_file']
+            metrics = result['metrics']
+            clean_symbol = symbol.split(':')[1].replace('-EQ', '') if ':' in symbol else symbol.replace('-EQ', '')
+
+            summary_data.append({
+                'Database': db_file.replace('.db', ''),
+                'Symbol': clean_symbol,
+                'Trades': metrics['total_trades'],
+                'Win Rate': f"{metrics['win_rate']:.1f}%",
+                'Total P&L': f"₹{metrics['total_pnl']:.2f}",
+                'Avg P&L': f"₹{metrics['avg_pnl']:.2f}",
+                'Avg Return': f"{metrics['avg_return']:.2f}%",
+                'Avg Duration': f"{metrics['avg_duration']:.1f} min",
+                'ST Exits': metrics['trailing_stop_exits'],
+                'Square-off': metrics['square_off_exits']
             })
 
         summary_df = pd.DataFrame(summary_data)
@@ -749,24 +856,30 @@ class SupertrendTrailingStopBacktester:
 
         # Overall statistics
         print(f"\n{'='*100}")
-        print("OVERALL STATISTICS")
+        print("OVERALL STATISTICS (All Databases Combined)")
         print(f"{'='*100}")
 
         total_trades = sum(r['metrics']['total_trades'] for r in self.results.values())
         total_pnl = sum(r['metrics']['total_pnl'] for r in self.results.values())
         winning_trades = sum(r['metrics']['winning_trades'] for r in self.results.values())
-        profitable_symbols = sum(1 for r in self.results.values() if r['metrics']['total_pnl'] > 0)
+        profitable_results = sum(1 for r in self.results.values() if r['metrics']['total_pnl'] > 0)
 
-        print(f"Symbols Tested: {len(self.results)}")
+        # Count unique databases and symbols
+        unique_databases = len(set(r['db_file'] for r in self.results.values()))
+        unique_symbols = len(set(r['symbol'] for r in self.results.values()))
+
+        print(f"Databases Processed: {unique_databases}")
+        print(f"Unique Symbols Tested: {unique_symbols}")
+        print(f"Total Symbol-Database Combinations: {len(self.results)}")
         print(f"Total Trades: {total_trades}")
         print(f"Total P&L: ₹{total_pnl:.2f}")
         win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0.0
         print(f"Overall Win Rate: {win_rate:.1f}%")
-        print(f"Profitable Symbols: {profitable_symbols}/{len(self.results)}")
+        print(f"Profitable Combinations: {profitable_results}/{len(self.results)}")
 
         # Export to CSV
-        summary_df.to_csv('supertrend_trailing_stop_results.csv', index=False)
-        print(f"\n✅ Results exported to: supertrend_trailing_stop_results.csv")
+        summary_df.to_csv('supertrend_trailing_stop_all_results.csv', index=False)
+        print(f"\n✅ All results exported to: supertrend_trailing_stop_all_results.csv")
 
 
 # Main execution
