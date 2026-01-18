@@ -908,7 +908,7 @@ if __name__ == "__main__":
 
         # Trailing stops
         use_trailing_stop=True,
-        trailing_stop_atr_mult=1.0,
+        trailing_stop_atr_mult=1.5,
 
         # Trading rules
         initial_capital=100000,
