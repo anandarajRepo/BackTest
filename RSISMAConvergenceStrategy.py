@@ -20,6 +20,8 @@ class RSISMAConvergenceBacktester:
                  convergence_threshold_pct=0.5,
                  atr_period=14,
                  stop_loss_atr_mult=1.5, target_atr_mult=3.0,
+                 stop_loss_percent=1.0, target_percent=2.0,
+                 use_atr_targets=True,
                  trailing_stop_atr_mult=1.0, use_trailing_stop=False,
                  initial_capital=100000, square_off_time="15:20",
                  min_data_points=100, tick_interval='5',
@@ -84,6 +86,9 @@ class RSISMAConvergenceBacktester:
         - atr_period: ATR calculation period (default: 14)
         - stop_loss_atr_mult: Stop loss in ATR multiples (default: 1.5)
         - target_atr_mult: Target in ATR multiples (default: 3.0)
+        - stop_loss_percent: Stop loss as % of price when not using ATR (default: 1.0%)
+        - target_percent: Target as % of price when not using ATR (default: 2.0%)
+        - use_atr_targets: Use ATR for targets vs percentage-based (default: True)
         - trailing_stop_atr_mult: Trailing stop in ATR (default: 1.0)
         - use_trailing_stop: Enable trailing stops (default: False)
         - last_entry_time: Last entry time (default: "14:30")
@@ -120,6 +125,11 @@ class RSISMAConvergenceBacktester:
         self.trailing_stop_atr_mult = trailing_stop_atr_mult
         self.use_trailing_stop = use_trailing_stop
 
+        # Target calculation method
+        self.use_atr_targets = use_atr_targets
+        self.stop_loss_percent = stop_loss_percent / 100
+        self.target_percent = target_percent / 100
+
         # Trading parameters
         self.initial_capital = initial_capital
         self.square_off_time = self.parse_square_off_time(square_off_time)
@@ -151,8 +161,13 @@ class RSISMAConvergenceBacktester:
         print(f"  Convergence/Divergence Threshold: {convergence_threshold_pct}%")
         print(f"  RSI Period: {self.rsi_period} (Oversold: {self.rsi_oversold}, Overbought: {self.rsi_overbought})")
         print(f"  ATR Period: {self.atr_period}")
-        print(f"  Stop Loss: {self.stop_loss_atr_mult}x ATR")
-        print(f"  Target: {self.target_atr_mult}x ATR")
+        print(f"  Target Method: {'ATR-based' if use_atr_targets else 'Percentage-based'}")
+        if use_atr_targets:
+            print(f"  Stop Loss: {self.stop_loss_atr_mult}x ATR")
+            print(f"  Target: {self.target_atr_mult}x ATR")
+        else:
+            print(f"  Stop Loss: {stop_loss_percent}% of price")
+            print(f"  Target: {target_percent}% of price")
         print(f"  Trailing Stop: {'Enabled' if use_trailing_stop else 'Disabled'}")
         if use_trailing_stop:
             print(f"  Trailing Stop: {self.trailing_stop_atr_mult}x ATR")
@@ -563,8 +578,12 @@ class RSISMAConvergenceBacktester:
                         # Check if divergence started (distance increased after convergence)
                         if diverging and sma_distance > min_sma_distance_in_pattern:
                             # LONG ENTRY SIGNAL
-                            stop_loss_price = current_price - (current_atr * self.stop_loss_atr_mult)
-                            target_price = current_price + (current_atr * self.target_atr_mult)
+                            if self.use_atr_targets:
+                                stop_loss_price = current_price - (current_atr * self.stop_loss_atr_mult)
+                                target_price = current_price + (current_atr * self.target_atr_mult)
+                            else:
+                                stop_loss_price = current_price * (1 - self.stop_loss_percent)
+                                target_price = current_price * (1 + self.target_percent)
 
                             risk = current_price - stop_loss_price
                             reward = target_price - current_price
@@ -637,8 +656,12 @@ class RSISMAConvergenceBacktester:
                         # Check if convergence started (distance decreased after divergence)
                         if converging and sma_distance < max_sma_distance_in_pattern:
                             # SHORT ENTRY SIGNAL
-                            stop_loss_price = current_price + (current_atr * self.stop_loss_atr_mult)
-                            target_price = current_price - (current_atr * self.target_atr_mult)
+                            if self.use_atr_targets:
+                                stop_loss_price = current_price + (current_atr * self.stop_loss_atr_mult)
+                                target_price = current_price - (current_atr * self.target_atr_mult)
+                            else:
+                                stop_loss_price = current_price * (1 + self.stop_loss_percent)
+                                target_price = current_price * (1 - self.target_percent)
 
                             risk = stop_loss_price - current_price
                             reward = current_price - target_price
@@ -905,6 +928,9 @@ if __name__ == "__main__":
         atr_period=14,
         stop_loss_atr_mult=1.5,
         target_atr_mult=3.0,
+        use_atr_targets=True,  # Use ATR for targets
+        stop_loss_percent=1.0,  # If using percentage-based targets
+        target_percent=2.0,  # If using percentage-based targets
 
         # Trailing stops
         use_trailing_stop=True,
