@@ -928,9 +928,9 @@ if __name__ == "__main__":
         atr_period=14,
         stop_loss_atr_mult=1.5,
         target_atr_mult=3.0,
-        use_atr_targets=True,  # Use ATR for targets
-        stop_loss_percent=1.0,  # If using percentage-based targets
-        target_percent=2.0,  # If using percentage-based targets
+        use_atr_targets=False,  # Use ATR for targets
+        stop_loss_percent=1.5,  # If using percentage-based targets
+        target_percent=3.0,  # If using percentage-based targets
 
         # Trailing stops
         use_trailing_stop=True,

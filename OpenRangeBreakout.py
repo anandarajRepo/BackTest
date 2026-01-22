@@ -20,8 +20,8 @@ class OpenRangeBreakoutBacktester:
                  momentum_period=14, momentum_threshold=0,
                  rsi_period=14, rsi_oversold=30, rsi_overbought=70,
                  stop_loss_atr_mult=1.5, target_atr_mult=3.0,
-                 target_range_mult=2.0, use_atr_targets=True,
-                 trailing_stop_atr_mult=1.0, use_trailing_stop=False,
+                 target_range_mult=2.0, use_atr_targets=False,
+                 trailing_stop_atr_mult=1.5, use_trailing_stop=False,
                  initial_capital=100000, square_off_time="15:20",
                  min_data_points=100, tick_interval='5',
                  last_entry_time="14:30", max_trades_per_day=3,
@@ -1017,7 +1017,7 @@ if __name__ == "__main__":
 
         # Trailing stops
         use_trailing_stop=True,
-        trailing_stop_atr_mult=1.0,
+        trailing_stop_atr_mult=1.5,
 
         # Trading rules
         initial_capital=100000,

@@ -1030,22 +1030,22 @@ if __name__ == "__main__":
     symbol_pairs = [
         {
             'spot': 'NSE:RELIANCE-EQ',
-            'futures': 'NSE:RELIANCE25DECFUT',  # Adjust month as needed
+            'futures': 'NSE:RELIANCE26JANFUT',  # Adjust month as needed
             'base_name': 'RELIANCE'
         },
         {
             'spot': 'NSE:HDFCBANK-EQ',
-            'futures': 'NSE:HDFCBANK25DECFUT',
+            'futures': 'NSE:HDFCBANK26JANFUT',
             'base_name': 'HDFCBANK'
         },
         {
             'spot': 'NSE:INFY-EQ',
-            'futures': 'NSE:INFY25DECFUT',
+            'futures': 'NSE:INFY26JANFUT',
             'base_name': 'INFY'
         },
         {
             'spot': 'NSE:TCS-EQ',
-            'futures': 'NSE:TCS25DECFUT',
+            'futures': 'NSE:TCS26JANFUT',
             'base_name': 'TCS'
         }
     ]
