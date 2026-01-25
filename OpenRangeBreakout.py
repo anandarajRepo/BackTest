@@ -22,6 +22,7 @@ class OpenRangeBreakoutBacktester:
                  stop_loss_atr_mult=1.5, target_atr_mult=3.0,
                  target_range_mult=2.0, use_atr_targets=False,
                  trailing_stop_atr_mult=1.5, use_trailing_stop=False,
+                 use_fvg_entry=True, fvg_lookback=10,
                  initial_capital=100000, square_off_time="15:20",
                  min_data_points=100, tick_interval='5',
                  last_entry_time="14:30", max_trades_per_day=3,
@@ -63,6 +64,12 @@ class OpenRangeBreakoutBacktester:
            - Optional trailing stops
            - Time-based filters
 
+        5. Fair Value Gap (FVG) Filter
+           - Bullish FVG: Low of current candle > High of candle 2 bars ago
+           - Bearish FVG: High of current candle < Low of candle 2 bars ago
+           - FVGs indicate price imbalances that support directional moves
+           - Lookback period checks for recent FVGs before entry
+
         ENTRY SIGNALS:
         --------------
         LONG ENTRY:
@@ -72,6 +79,7 @@ class OpenRangeBreakoutBacktester:
         - Breakout sustained for N candles
         - Valid trading time
         - Risk-reward ratio acceptable
+        - Bullish FVG present within lookback period (if enabled)
 
         SHORT ENTRY:
         - Opening range identified and validated
@@ -80,6 +88,7 @@ class OpenRangeBreakoutBacktester:
         - Breakout sustained for N candles
         - Valid trading time
         - Risk-reward ratio acceptable
+        - Bearish FVG present within lookback period (if enabled)
 
         EXIT SIGNALS:
         -------------
@@ -107,6 +116,8 @@ class OpenRangeBreakoutBacktester:
         - use_atr_targets: Use ATR for targets vs range multiples (default: True)
         - trailing_stop_atr_mult: Trailing stop in ATR (default: 1.0)
         - use_trailing_stop: Enable trailing stops (default: False)
+        - use_fvg_entry: Require Fair Value Gap for entry (default: True)
+        - fvg_lookback: Number of candles to look back for FVG (default: 10)
         - min_range_pct: Minimum range % for valid setup (default: 0.3%)
         - max_range_pct: Maximum range % for valid setup (default: 3.0%)
         - last_entry_time: Last entry time (default: "14:30")
@@ -151,6 +162,10 @@ class OpenRangeBreakoutBacktester:
         self.target_atr_mult = target_atr_mult
         self.trailing_stop_atr_mult = trailing_stop_atr_mult
         self.use_trailing_stop = use_trailing_stop
+
+        # Fair Value Gap parameters
+        self.use_fvg_entry = use_fvg_entry
+        self.fvg_lookback = fvg_lookback
 
         # Target calculation method
         self.use_atr_targets = use_atr_targets
@@ -199,6 +214,9 @@ class OpenRangeBreakoutBacktester:
         print(f"  Trailing Stop: {'Enabled' if use_trailing_stop else 'Disabled'}")
         if use_trailing_stop:
             print(f"  Trailing Stop: {self.trailing_stop_atr_mult}x ATR")
+        print(f"  Fair Value Gap Entry: {'Enabled' if use_fvg_entry else 'Disabled'}")
+        if use_fvg_entry:
+            print(f"  FVG Lookback: {self.fvg_lookback} candles")
         print(f"  Max Trades/Day: {self.max_trades_per_day}")
         print(f"  Min Risk-Reward: {self.min_risk_reward}:1")
         print(f"  Last Entry: {last_entry_time}")
@@ -330,6 +348,71 @@ class OpenRangeBreakoutBacktester:
 
         # Calculate RSI
         df['rsi'] = 100 - (100 / (1 + rs))
+
+        return df
+
+    def detect_fair_value_gaps(self, df):
+        """Detect Fair Value Gaps (FVG) in price action
+
+        Fair Value Gap (FVG) is a price imbalance concept from ICT methodology.
+        It represents an area where price moved so fast that it left a gap that
+        may be revisited later.
+
+        Bullish FVG (for long entries):
+        - Occurs when: Low of current candle > High of candle 2 bars ago
+        - Indicates bullish momentum and potential support zone
+        - The gap between these levels is the FVG
+
+        Bearish FVG (for short entries):
+        - Occurs when: High of current candle < Low of candle 2 bars ago
+        - Indicates bearish momentum and potential resistance zone
+        - The gap between these levels is the FVG
+
+        This method identifies FVGs and marks candles where a recent FVG
+        exists within the lookback period to support entry decisions.
+        """
+        # Initialize FVG columns
+        df['bullish_fvg'] = False
+        df['bearish_fvg'] = False
+        df['bullish_fvg_high'] = np.nan  # Upper boundary of bullish FVG
+        df['bullish_fvg_low'] = np.nan   # Lower boundary of bullish FVG
+        df['bearish_fvg_high'] = np.nan  # Upper boundary of bearish FVG
+        df['bearish_fvg_low'] = np.nan   # Lower boundary of bearish FVG
+
+        # Detect FVGs - need at least 3 candles
+        if len(df) < 3:
+            df['has_recent_bullish_fvg'] = False
+            df['has_recent_bearish_fvg'] = False
+            return df
+
+        # Get arrays for faster processing
+        highs = df['high'].values
+        lows = df['low'].values
+
+        # Detect FVGs at each candle (candle i forms FVG with candle i-2)
+        for i in range(2, len(df)):
+            # Bullish FVG: Current candle's low > high of 2 candles ago
+            # This creates a gap below the current price
+            if lows[i] > highs[i-2]:
+                df.iloc[i, df.columns.get_loc('bullish_fvg')] = True
+                df.iloc[i, df.columns.get_loc('bullish_fvg_high')] = lows[i]  # Top of gap
+                df.iloc[i, df.columns.get_loc('bullish_fvg_low')] = highs[i-2]  # Bottom of gap
+
+            # Bearish FVG: Current candle's high < low of 2 candles ago
+            # This creates a gap above the current price
+            if highs[i] < lows[i-2]:
+                df.iloc[i, df.columns.get_loc('bearish_fvg')] = True
+                df.iloc[i, df.columns.get_loc('bearish_fvg_high')] = lows[i-2]  # Top of gap
+                df.iloc[i, df.columns.get_loc('bearish_fvg_low')] = highs[i]  # Bottom of gap
+
+        # Check for recent FVGs within lookback period for entry decisions
+        df['has_recent_bullish_fvg'] = df['bullish_fvg'].rolling(
+            window=self.fvg_lookback, min_periods=1
+        ).max().astype(bool)
+
+        df['has_recent_bearish_fvg'] = df['bearish_fvg'].rolling(
+            window=self.fvg_lookback, min_periods=1
+        ).max().astype(bool)
 
         return df
 
@@ -476,6 +559,7 @@ class OpenRangeBreakoutBacktester:
         df = self.calculate_atr(df)
         df = self.calculate_momentum(df)
         df = self.calculate_rsi(df)
+        df = self.detect_fair_value_gaps(df)
         df = self.identify_opening_range(df)
         df = self.detect_breakouts(df)
         df = self.generate_signals(df)
@@ -575,7 +659,10 @@ class OpenRangeBreakoutBacktester:
                             reward = target_price - current_price
                             risk_reward = reward / risk if risk > 0 else 0
 
-                            if risk_reward >= self.min_risk_reward:
+                            # Check FVG condition for long entry
+                            has_bullish_fvg = df.iloc[i]['has_recent_bullish_fvg'] if self.use_fvg_entry else True
+
+                            if risk_reward >= self.min_risk_reward and has_bullish_fvg:
                                 position = 1
                                 entry_price = current_price
                                 entry_time = current_time
@@ -599,13 +686,16 @@ class OpenRangeBreakoutBacktester:
                                         'risk_reward': risk_reward,
                                         'orh': breakout_info['orh'],
                                         'orl': breakout_info['orl'],
-                                        'or_range': breakout_info['or_range']
+                                        'or_range': breakout_info['or_range'],
+                                        'fvg_confirmed': has_bullish_fvg
                                     })
 
                                     print(f"\n[ORB LONG ENTRY] {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                                     print(f"  Price: ₹{entry_price:.2f} | Stop: ₹{stop_loss:.2f} | Target: ₹{target:.2f}")
                                     print(f"  Shares: {shares} | R:R = 1:{risk_reward:.2f}")
                                     print(f"  Opening Range: ₹{breakout_info['orl']:.2f} - ₹{breakout_info['orh']:.2f}")
+                                    if self.use_fvg_entry:
+                                        print(f"  FVG Confirmed: ✅ Bullish")
 
                 elif breakout_direction == -1:  # Down breakout
                     if current_high > breakout_info['orl']:
@@ -630,7 +720,10 @@ class OpenRangeBreakoutBacktester:
                             reward = current_price - target_price
                             risk_reward = reward / risk if risk > 0 else 0
 
-                            if risk_reward >= self.min_risk_reward:
+                            # Check FVG condition for short entry
+                            has_bearish_fvg = df.iloc[i]['has_recent_bearish_fvg'] if self.use_fvg_entry else True
+
+                            if risk_reward >= self.min_risk_reward and has_bearish_fvg:
                                 position = -1
                                 entry_price = current_price
                                 entry_time = current_time
@@ -654,13 +747,16 @@ class OpenRangeBreakoutBacktester:
                                         'risk_reward': risk_reward,
                                         'orh': breakout_info['orh'],
                                         'orl': breakout_info['orl'],
-                                        'or_range': breakout_info['or_range']
+                                        'or_range': breakout_info['or_range'],
+                                        'fvg_confirmed': has_bearish_fvg
                                     })
 
                                     print(f"\n[ORB SHORT ENTRY] {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                                     print(f"  Price: ₹{entry_price:.2f} | Stop: ₹{stop_loss:.2f} | Target: ₹{target:.2f}")
                                     print(f"  Shares: {shares} | R:R = 1:{risk_reward:.2f}")
                                     print(f"  Opening Range: ₹{breakout_info['orl']:.2f} - ₹{breakout_info['orh']:.2f}")
+                                    if self.use_fvg_entry:
+                                        print(f"  FVG Confirmed: ✅ Bearish")
 
             # Entry signals
             elif position == 0 and not is_square_off:
@@ -1018,6 +1114,10 @@ if __name__ == "__main__":
         # Trailing stops
         use_trailing_stop=True,
         trailing_stop_atr_mult=1.5,
+
+        # Fair Value Gap entry filter
+        use_fvg_entry=True,  # Require FVG confirmation before entry
+        fvg_lookback=10,  # Look back 10 candles for recent FVG
 
         # Trading rules
         initial_capital=100000,
