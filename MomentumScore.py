@@ -730,6 +730,9 @@ if __name__ == "__main__":
         "NSE:SKYGOLD-EQ",
         "NSE:AXISCADES-EQ",
         "BSE:SATTRIX-M"
+
+        "NSE:AWHCL-EQ",
+        "NSE:KAPSTON-EQ",
     ]
     for symbol in SYMBOLS:
         np.random.seed(hash(symbol) % 1000)

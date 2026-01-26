@@ -1079,6 +1079,9 @@ if __name__ == "__main__":
         "NSE:SKYGOLD-EQ",
         "NSE:AXISCADES-EQ",
         "BSE:SATTRIX-M"
+
+        "NSE:AWHCL-EQ",
+        "NSE:KAPSTON-EQ",
     ]
 
     backtester = OpenRangeBreakoutBacktester(
@@ -1116,7 +1119,7 @@ if __name__ == "__main__":
         trailing_stop_atr_mult=1.5,
 
         # Fair Value Gap entry filter
-        use_fvg_entry=True,  # Require FVG confirmation before entry
+        use_fvg_entry=False,  # Require FVG confirmation before entry
         fvg_lookback=10,  # Look back 10 candles for recent FVG
 
         # Trading rules
