@@ -384,13 +384,15 @@ class MomentumScoreCalculator:
         roc_score = np.clip(result_df['mom_roc'] * 3, -100, 100)
 
         # Calculate composite score using weights
+        # Note: fillna(0) is applied to all components to handle NaN values
+        # that occur in initial rows due to rolling window and shift operations
         result_df['momentum_score'] = (
-            roc_score * self.weights['roc'] +
-            result_df['mom_rsi_score'] * self.weights['rsi_momentum'] +
+            roc_score.fillna(0) * self.weights['roc'] +
+            result_df['mom_rsi_score'].fillna(0) * self.weights['rsi_momentum'] +
             result_df['mom_volume'].fillna(0) * self.weights['volume_momentum'] +
-            result_df['mom_trend_consistency'] * self.weights['trend_consistency'] +
-            result_df['mom_acceleration'] * self.weights['acceleration'] +
-            result_df['mom_multi_tf'] * self.weights['multi_timeframe']
+            result_df['mom_trend_consistency'].fillna(0) * self.weights['trend_consistency'] +
+            result_df['mom_acceleration'].fillna(0) * self.weights['acceleration'] +
+            result_df['mom_multi_tf'].fillna(0) * self.weights['multi_timeframe']
         )
 
         # Smooth the final score
