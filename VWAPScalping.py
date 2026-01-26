@@ -1019,7 +1019,7 @@ if __name__ == "__main__":
 
         # Trailing stops
         use_trailing_stop=True,
-        trailing_stop_atr_mult=0.5,  # Very tight trailing stop for scalping
+        trailing_stop_atr_mult=1.5,  # Very tight trailing stop for scalping
 
         # Trading rules
         initial_capital=100000,
