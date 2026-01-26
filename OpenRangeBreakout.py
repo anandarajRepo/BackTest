@@ -7,6 +7,7 @@ import pytz
 import warnings
 from fyers_apiv3 import fyersModel
 from dotenv import load_dotenv
+from MomentumScore import MomentumScoreCalculator, add_momentum_score_to_df
 
 warnings.filterwarnings('ignore')
 
@@ -23,6 +24,8 @@ class OpenRangeBreakoutBacktester:
                  target_range_mult=2.0, use_atr_targets=False,
                  trailing_stop_atr_mult=1.5, use_trailing_stop=False,
                  use_fvg_entry=True, fvg_lookback=10,
+                 use_momentum_score_filter=True, momentum_score_lookback=20,
+                 min_momentum_score_long=10, max_momentum_score_short=-10,
                  initial_capital=100000, square_off_time="15:20",
                  min_data_points=100, tick_interval='5',
                  last_entry_time="14:30", max_trades_per_day=3,
@@ -118,6 +121,10 @@ class OpenRangeBreakoutBacktester:
         - use_trailing_stop: Enable trailing stops (default: False)
         - use_fvg_entry: Require Fair Value Gap for entry (default: True)
         - fvg_lookback: Number of candles to look back for FVG (default: 10)
+        - use_momentum_score_filter: Require momentum score confirmation (default: True)
+        - momentum_score_lookback: Days to calculate momentum score (default: 20)
+        - min_momentum_score_long: Min momentum score for long entry (default: 10)
+        - max_momentum_score_short: Max momentum score for short entry (default: -10)
         - min_range_pct: Minimum range % for valid setup (default: 0.3%)
         - max_range_pct: Maximum range % for valid setup (default: 3.0%)
         - last_entry_time: Last entry time (default: "14:30")
@@ -166,6 +173,20 @@ class OpenRangeBreakoutBacktester:
         # Fair Value Gap parameters
         self.use_fvg_entry = use_fvg_entry
         self.fvg_lookback = fvg_lookback
+
+        # Momentum Score parameters
+        self.use_momentum_score_filter = use_momentum_score_filter
+        self.momentum_score_lookback = momentum_score_lookback
+        self.min_momentum_score_long = min_momentum_score_long
+        self.max_momentum_score_short = max_momentum_score_short
+
+        # Initialize Momentum Score Calculator
+        self.momentum_calculator = MomentumScoreCalculator(
+            lookback_days=momentum_score_lookback,
+            short_period=5,
+            medium_period=10,
+            long_period=momentum_score_lookback
+        )
 
         # Target calculation method
         self.use_atr_targets = use_atr_targets
@@ -217,6 +238,11 @@ class OpenRangeBreakoutBacktester:
         print(f"  Fair Value Gap Entry: {'Enabled' if use_fvg_entry else 'Disabled'}")
         if use_fvg_entry:
             print(f"  FVG Lookback: {self.fvg_lookback} candles")
+        print(f"  Momentum Score Filter: {'Enabled' if use_momentum_score_filter else 'Disabled'}")
+        if use_momentum_score_filter:
+            print(f"    - Lookback: {momentum_score_lookback} days")
+            print(f"    - Long Entry Min Score: {min_momentum_score_long}")
+            print(f"    - Short Entry Max Score: {max_momentum_score_short}")
         print(f"  Max Trades/Day: {self.max_trades_per_day}")
         print(f"  Min Risk-Reward: {self.min_risk_reward}:1")
         print(f"  Last Entry: {last_entry_time}")
@@ -416,6 +442,91 @@ class OpenRangeBreakoutBacktester:
 
         return df
 
+    def calculate_momentum_scores(self, df):
+        """Calculate comprehensive momentum scores for the stock.
+
+        This method uses the MomentumScoreCalculator to compute various
+        momentum metrics including:
+        - Composite momentum score (-100 to +100)
+        - Rate of Change (ROC) for multiple timeframes
+        - RSI-based momentum
+        - Volume momentum
+        - Trend consistency
+        - Momentum acceleration
+
+        Args:
+            df: DataFrame with OHLCV data
+
+        Returns:
+            DataFrame with momentum score columns added
+        """
+        if not self.use_momentum_score_filter:
+            # If momentum filter disabled, just add placeholder columns
+            df['momentum_score'] = 0
+            df['momentum_category'] = 'Neutral'
+            df['mom_roc'] = 0
+            df['mom_rsi'] = 50
+            return df
+
+        try:
+            # Use the momentum calculator to add all momentum columns
+            df = self.momentum_calculator.calculate_composite_momentum_score(df)
+
+            # Fill NaN values with neutral values
+            df['momentum_score'] = df['momentum_score'].fillna(0)
+            df['momentum_category'] = df['momentum_category'].fillna('Neutral')
+
+            # Print momentum summary for the stock
+            latest_score = df['momentum_score'].iloc[-1] if len(df) > 0 else 0
+            latest_category = df['momentum_category'].iloc[-1] if len(df) > 0 else 'Neutral'
+            avg_score = df['momentum_score'].mean()
+
+            print(f"  Momentum Analysis:")
+            print(f"    - Current Score: {latest_score:.2f} ({latest_category})")
+            print(f"    - Average Score: {avg_score:.2f}")
+
+        except Exception as e:
+            print(f"  Warning: Error calculating momentum scores: {e}")
+            df['momentum_score'] = 0
+            df['momentum_category'] = 'Neutral'
+            df['mom_roc'] = 0
+            df['mom_rsi'] = 50
+
+        return df
+
+    def check_momentum_condition(self, df, idx, direction):
+        """Check if momentum score conditions are met for entry.
+
+        Args:
+            df: DataFrame with momentum scores
+            idx: Current index position
+            direction: 1 for long, -1 for short
+
+        Returns:
+            tuple: (condition_met: bool, momentum_score: float, category: str)
+        """
+        if not self.use_momentum_score_filter:
+            return True, 0, 'Disabled'
+
+        try:
+            momentum_score = df.iloc[idx]['momentum_score']
+            momentum_category = df.iloc[idx].get('momentum_category', 'Neutral')
+
+            if pd.isna(momentum_score):
+                return True, 0, 'N/A'
+
+            if direction == 1:  # Long entry
+                # For longs, we want positive momentum
+                condition_met = momentum_score >= self.min_momentum_score_long
+            else:  # Short entry
+                # For shorts, we want negative momentum
+                condition_met = momentum_score <= self.max_momentum_score_short
+
+            return condition_met, momentum_score, str(momentum_category)
+
+        except Exception as e:
+            return True, 0, 'Error'
+
     def identify_opening_range(self, df):
         """Identify opening range for each trading day"""
         df['trading_day'] = df.index.date
@@ -560,6 +671,7 @@ class OpenRangeBreakoutBacktester:
         df = self.calculate_momentum(df)
         df = self.calculate_rsi(df)
         df = self.detect_fair_value_gaps(df)
+        df = self.calculate_momentum_scores(df)  # Calculate comprehensive momentum scores
         df = self.identify_opening_range(df)
         df = self.detect_breakouts(df)
         df = self.generate_signals(df)
@@ -662,7 +774,10 @@ class OpenRangeBreakoutBacktester:
                             # Check FVG condition for long entry
                             has_bullish_fvg = df.iloc[i]['has_recent_bullish_fvg'] if self.use_fvg_entry else True
 
-                            if risk_reward >= self.min_risk_reward and has_bullish_fvg:
+                            # Check momentum score condition for long entry
+                            mom_condition, mom_score, mom_category = self.check_momentum_condition(df, i, direction=1)
+
+                            if risk_reward >= self.min_risk_reward and has_bullish_fvg and mom_condition:
                                 position = 1
                                 entry_price = current_price
                                 entry_time = current_time
@@ -687,7 +802,9 @@ class OpenRangeBreakoutBacktester:
                                         'orh': breakout_info['orh'],
                                         'orl': breakout_info['orl'],
                                         'or_range': breakout_info['or_range'],
-                                        'fvg_confirmed': has_bullish_fvg
+                                        'fvg_confirmed': has_bullish_fvg,
+                                        'momentum_score': mom_score,
+                                        'momentum_category': mom_category
                                     })
 
                                     print(f"\n[ORB LONG ENTRY] {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -696,6 +813,8 @@ class OpenRangeBreakoutBacktester:
                                     print(f"  Opening Range: ₹{breakout_info['orl']:.2f} - ₹{breakout_info['orh']:.2f}")
                                     if self.use_fvg_entry:
                                         print(f"  FVG Confirmed: ✅ Bullish")
+                                    if self.use_momentum_score_filter:
+                                        print(f"  Momentum Score: {mom_score:.2f} ({mom_category})")
 
                 elif breakout_direction == -1:  # Down breakout
                     if current_high > breakout_info['orl']:
@@ -723,7 +842,10 @@ class OpenRangeBreakoutBacktester:
                             # Check FVG condition for short entry
                             has_bearish_fvg = df.iloc[i]['has_recent_bearish_fvg'] if self.use_fvg_entry else True
 
-                            if risk_reward >= self.min_risk_reward and has_bearish_fvg:
+                            # Check momentum score condition for short entry
+                            mom_condition, mom_score, mom_category = self.check_momentum_condition(df, i, direction=-1)
+
+                            if risk_reward >= self.min_risk_reward and has_bearish_fvg and mom_condition:
                                 position = -1
                                 entry_price = current_price
                                 entry_time = current_time
@@ -748,7 +870,9 @@ class OpenRangeBreakoutBacktester:
                                         'orh': breakout_info['orh'],
                                         'orl': breakout_info['orl'],
                                         'or_range': breakout_info['or_range'],
-                                        'fvg_confirmed': has_bearish_fvg
+                                        'fvg_confirmed': has_bearish_fvg,
+                                        'momentum_score': mom_score,
+                                        'momentum_category': mom_category
                                     })
 
                                     print(f"\n[ORB SHORT ENTRY] {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -757,6 +881,8 @@ class OpenRangeBreakoutBacktester:
                                     print(f"  Opening Range: ₹{breakout_info['orl']:.2f} - ₹{breakout_info['orh']:.2f}")
                                     if self.use_fvg_entry:
                                         print(f"  FVG Confirmed: ✅ Bearish")
+                                    if self.use_momentum_score_filter:
+                                        print(f"  Momentum Score: {mom_score:.2f} ({mom_category})")
 
             # Entry signals
             elif position == 0 and not is_square_off:
@@ -1118,6 +1244,12 @@ if __name__ == "__main__":
         # Fair Value Gap entry filter
         use_fvg_entry=True,  # Require FVG confirmation before entry
         fvg_lookback=10,  # Look back 10 candles for recent FVG
+
+        # Momentum Score filter
+        use_momentum_score_filter=True,  # Enable momentum score filtering
+        momentum_score_lookback=20,  # Days to calculate momentum score
+        min_momentum_score_long=10,  # Min score for long entries (positive momentum)
+        max_momentum_score_short=-10,  # Max score for short entries (negative momentum)
 
         # Trading rules
         initial_capital=100000,
