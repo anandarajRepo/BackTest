@@ -622,7 +622,7 @@ if __name__ == "__main__":
 
     # Create sample data for testing
     np.random.seed(42)
-    dates = pd.date_range(start='2025-01-01', periods=100, freq='D')
+    dates = pd.date_range(start='2026-01-01', periods=100, freq='D')
 
     # Simulate price data with an upward trend
     base_price = 100
@@ -690,7 +690,46 @@ if __name__ == "__main__":
 
     # Create additional sample stocks
     stocks_data = {}
-    for symbol in ['STOCK_A', 'STOCK_B', 'STOCK_C', 'STOCK_D', 'STOCK_E']:
+    SYMBOLS = [
+        "NSE:SBIN-EQ",      # State Bank of India
+        "NSE:RELIANCE-EQ",  # Reliance Industries
+        "NSE:TCS-EQ",       # Tata Consultancy Services
+        "NSE:INFY-EQ",      # Infosys
+        "NSE:HDFCBANK-EQ"   # HDFC Bank
+
+        "NSE:URBANCO-EQ",
+        "NSE:AMANTA-EQ",
+        "NSE:VIKRAMSOLR-EQ",
+        "NSE:SHREEJISPG-EQ",
+        "NSE:PATELRMART-EQ",
+        "NSE:REGAAL-EQ",
+        "NSE:HILINFRA-EQ",
+        "NSE:SAATVIKGL-EQ",
+        "NSE:ATLANTAELE-EQ",
+        "NSE:STYL-EQ",
+        "NSE:SOLARWORLD-EQ",
+        "NSE:TRUALT-EQ",
+        "NSE:ADVANCE-EQ",
+        "NSE:LGEINDIA-EQ",
+        "NSE:RUBICON-EQ",
+        "NSE:MIDWESTLTD-EQ",
+        "NSE:ORKLAINDIA-EQ",
+        "NSE:LENSKART-EQ",
+        "NSE:GROWW-EQ",
+        "NSE:SUDEEPPHRM-EQ",
+        "NSE:EXCELSOFT-EQ",
+        "NSE:TENNIND-EQ",
+        "NSE:MEESHO-EQ",
+        "NSE:AEQUS-EQ",
+        "NSE:CORONA-EQ",
+
+        # Favourite Stocks
+        "NSE:STLTECH-EQ",
+        "NSE:SKYGOLD-EQ",
+        "NSE:AXISCADES-EQ",
+        "BSE:SATTRIX-M"
+    ]
+    for symbol in SYMBOLS:
         np.random.seed(hash(symbol) % 1000)
         returns = np.random.normal(np.random.uniform(-0.002, 0.003), 0.02, 100)
         prices = base_price * np.cumprod(1 + returns)
