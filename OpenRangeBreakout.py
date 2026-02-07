@@ -233,6 +233,12 @@ class OpenRangeBreakoutBacktester:
             self.symbols = symbols
             print(f"\nSymbols to backtest: {len(self.symbols)}")
 
+    @staticmethod
+    def _is_option_symbol(symbol):
+        """Check if symbol is an options contract (CE/PE suffix)"""
+        upper = symbol.upper()
+        return upper.endswith('CE') or upper.endswith('PE')
+
     def parse_square_off_time(self, time_str):
         """Parse time string to time object"""
         try:
@@ -247,13 +253,15 @@ class OpenRangeBreakoutBacktester:
             print(f"  Fetching data from Fyers for {symbol}...")
 
             # Prepare data request
+            # Options don't have continuous contracts, so disable cont_flag for them
+            is_option = self._is_option_symbol(symbol)
             data = {
                 "symbol": symbol,
                 "resolution": self.tick_interval,  # Resolution in seconds (e.g., "5" for 5 seconds)
                 "date_format": "0",  # Unix timestamp
                 "range_from": str(self.range_from),
                 "range_to": str(self.range_to),
-                "cont_flag": "1"
+                "cont_flag": "0" if is_option else "1"
             }
 
             # Fetch data from Fyers
@@ -416,7 +424,7 @@ class OpenRangeBreakoutBacktester:
 
         return df
 
-    def identify_opening_range(self, df):
+    def identify_opening_range(self, df, symbol=""):
         """Identify opening range for each trading day"""
         df['trading_day'] = df.index.date
         df['time_of_day'] = df.index.time
@@ -425,6 +433,11 @@ class OpenRangeBreakoutBacktester:
         range_end_time = time(9, self.range_end_minutes)
         df['in_opening_range'] = (df['time_of_day'] >= self.market_open_time) & \
                                   (df['time_of_day'] < range_end_time)
+
+        # Options have wider percentage ranges than equities due to leverage/gamma
+        is_option = self._is_option_symbol(symbol)
+        min_rng = self.min_range_pct
+        max_rng = self.max_range_pct if not is_option else self.max_range_pct * 10  # 30% for options
 
         # Calculate opening range high and low for each day
         opening_ranges = {}
@@ -442,7 +455,8 @@ class OpenRangeBreakoutBacktester:
                 avg_volume = opening_data['volume'].mean()
 
                 # Validate range
-                if self.min_range_pct <= (range_size / opening_price) <= self.max_range_pct:
+                range_ratio = range_size / opening_price
+                if min_rng <= range_ratio <= max_rng:
                     opening_ranges[day] = {
                         'orh': orh,
                         'orl': orl,
@@ -454,6 +468,8 @@ class OpenRangeBreakoutBacktester:
                         'valid': True
                     }
                 else:
+                    print(f"  {day}: Opening range {range_pct:.2f}% outside valid bounds "
+                          f"({min_rng*100:.1f}%-{max_rng*100:.1f}%), skipping")
                     opening_ranges[day] = {'valid': False}
             else:
                 opening_ranges[day] = {'valid': False}
@@ -560,7 +576,7 @@ class OpenRangeBreakoutBacktester:
         df = self.calculate_momentum(df)
         df = self.calculate_rsi(df)
         df = self.detect_fair_value_gaps(df)
-        df = self.identify_opening_range(df)
+        df = self.identify_opening_range(df, symbol=symbol)
         df = self.detect_breakouts(df)
         df = self.generate_signals(df)
 
@@ -1046,7 +1062,7 @@ if __name__ == "__main__":
         "NSE:RELIANCE-EQ",  # Reliance Industries
         "NSE:TCS-EQ",       # Tata Consultancy Services
         "NSE:INFY-EQ",      # Infosys
-        "NSE:HDFCBANK-EQ"   # HDFC Bank
+        "NSE:HDFCBANK-EQ",   # HDFC Bank
 
         "NSE:URBANCO-EQ",
         "NSE:AMANTA-EQ",
@@ -1078,10 +1094,14 @@ if __name__ == "__main__":
         "NSE:STLTECH-EQ",
         "NSE:SKYGOLD-EQ",
         "NSE:AXISCADES-EQ",
-        "BSE:SATTRIX-M"
+        "BSE:SATTRIX-M",
 
         "NSE:AWHCL-EQ",
         "NSE:KAPSTON-EQ",
+
+        # Nifty Options
+        "NSE:NIFTY2621025800CE",
+        "NSE:NIFTY2621025800PE",
     ]
 
     backtester = OpenRangeBreakoutBacktester(
