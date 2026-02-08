@@ -1046,7 +1046,7 @@ if __name__ == "__main__":
         "NSE:RELIANCE-EQ",  # Reliance Industries
         "NSE:TCS-EQ",       # Tata Consultancy Services
         "NSE:INFY-EQ",      # Infosys
-        "NSE:HDFCBANK-EQ"   # HDFC Bank
+        "NSE:HDFCBANK-EQ",   # HDFC Bank
 
         "NSE:URBANCO-EQ",
         "NSE:AMANTA-EQ",
@@ -1082,6 +1082,17 @@ if __name__ == "__main__":
 
         "NSE:AWHCL-EQ",
         "NSE:KAPSTON-EQ",
+
+        "NSE:NIFTY2621025800CE",
+        "NSE:NIFTY2621025800PE",
+        "NSE:NIFTY2621025600CE",
+        "NSE:NIFTY2621025600PE",
+        "NSE:FINNIFTY26FEB27700CE",
+        "NSE:FINNIFTY26FEB27700PE",
+        "NSE:MIDCPNIFTY26FEB14000CE",
+        "NSE:MIDCPNIFTY26FEB14000PE",
+        "NSE:BANKNIFTY26FEB60000CE",
+        "NSE:BANKNIFTY26FEB60000PE"
     ]
 
     backtester = OpenRangeBreakoutBacktester(
@@ -1091,9 +1102,9 @@ if __name__ == "__main__":
         backtest_days=30,  # Last 7 days
 
         # Opening range parameters
-        opening_range_minutes=15,  # First 15 minutes (9:15 - 9:30)
-        min_range_pct=0.3,  # Minimum 0.3% range
-        max_range_pct=3.0,  # Maximum 3.0% range
+        opening_range_minutes=30,  # First 15 minutes (9:15 - 9:30)
+        min_range_pct=3.0,  # Minimum 0.3% range
+        max_range_pct=15.0,  # Maximum 3.0% range
 
         # Breakout parameters
         breakout_confirmation_pct=0.2,  # 0.2% move beyond range
@@ -1116,7 +1127,7 @@ if __name__ == "__main__":
 
         # Trailing stops
         use_trailing_stop=True,
-        trailing_stop_atr_mult=1.5,
+        trailing_stop_atr_mult=1.0,
 
         # Fair Value Gap entry filter
         use_fvg_entry=False,  # Require FVG confirmation before entry
