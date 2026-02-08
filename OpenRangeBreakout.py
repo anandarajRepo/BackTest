@@ -28,7 +28,8 @@ class OpenRangeBreakoutBacktester:
                  last_entry_time="14:30", max_trades_per_day=3,
                  min_risk_reward=1.5, min_range_pct=0.3,
                  max_range_pct=3.0, false_breakout_candles=2,
-                 backtest_days=7):
+                 backtest_days=7,
+                 long_only=None):
         """
         Open Range Breakout (ORB) Strategy for Intraday Trading
 
@@ -182,6 +183,9 @@ class OpenRangeBreakoutBacktester:
         self.max_trades_per_day = max_trades_per_day
         self.min_risk_reward = min_risk_reward
 
+        # Position filter: True=long only, False=short only, None=both
+        self.long_only = long_only
+
         # Results storage
         self.results = {}
         self.combined_data = {}
@@ -217,6 +221,12 @@ class OpenRangeBreakoutBacktester:
         print(f"  Fair Value Gap Entry: {'Enabled' if use_fvg_entry else 'Disabled'}")
         if use_fvg_entry:
             print(f"  FVG Lookback: {self.fvg_lookback} candles")
+        if self.long_only is True:
+            print(f"  Position Filter: LONG ONLY")
+        elif self.long_only is False:
+            print(f"  Position Filter: SHORT ONLY")
+        else:
+            print(f"  Position Filter: BOTH (Long & Short)")
         print(f"  Max Trades/Day: {self.max_trades_per_day}")
         print(f"  Min Risk-Reward: {self.min_risk_reward}:1")
         print(f"  Last Entry: {last_entry_time}")
@@ -518,18 +528,24 @@ class OpenRangeBreakoutBacktester:
         df['valid_time'] = df.index.map(self.is_valid_trading_time)
 
         # LONG SIGNAL: Breakout above opening range high
+        # Suppressed when long_only is explicitly False (short only mode)
         df['long_signal'] = (
             (df['breakout_up']) &
             (df['valid_time']) &
             (~df['atr'].isna())
         )
+        if self.long_only is False:
+            df['long_signal'] = False
 
         # SHORT SIGNAL: Breakout below opening range low
+        # Suppressed when long_only is explicitly True (long only mode)
         df['short_signal'] = (
             (df['breakout_down']) &
             (df['valid_time']) &
             (~df['atr'].isna())
         )
+        if self.long_only is True:
+            df['short_signal'] = False
 
         return df
 
@@ -1139,7 +1155,10 @@ if __name__ == "__main__":
         tick_interval='5S',  # 5 seconds resolution (Fyers format)
         last_entry_time="14:30",
         max_trades_per_day=3,
-        min_risk_reward=1.5
+        min_risk_reward=1.5,
+
+        # Position filter
+        long_only=True  # True=long only, False=short only, None=both
     )
 
     backtester.run_backtest()
