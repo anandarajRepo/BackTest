@@ -915,12 +915,12 @@ if __name__ == "__main__":
         backtest_days=30,
 
         # SMA parameters
-        fast_sma_period=9,
-        slow_sma_period=21,
+        fast_sma_period=90,
+        slow_sma_period=210,
         convergence_threshold_pct=0.5,  # 0.5% change threshold
 
         # RSI parameters
-        rsi_period=14,
+        rsi_period=140,
         rsi_oversold=30,
         rsi_overbought=70,
 

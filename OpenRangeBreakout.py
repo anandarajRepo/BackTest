@@ -1143,7 +1143,7 @@ if __name__ == "__main__":
 
         # Trailing stops
         use_trailing_stop=True,
-        trailing_stop_atr_mult=1.0,
+        trailing_stop_atr_mult=3.0,
 
         # Fair Value Gap entry filter
         use_fvg_entry=False,  # Require FVG confirmation before entry
