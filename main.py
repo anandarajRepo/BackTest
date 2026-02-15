@@ -3,63 +3,16 @@
 BackTest CLI - Fyers Authentication & Strategy Runner
 
 Usage:
-    python main.py auth          # Generate Fyers access token
-    python main.py auth --port 8080  # Use custom port for redirect server
+    python main.py auth    # Generate Fyers access token
 """
 
 import argparse
 import os
 import sys
-import threading
-import time
-import webbrowser
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
 
 from dotenv import load_dotenv, set_key
 
 load_dotenv()
-
-
-class AuthCallbackHandler(BaseHTTPRequestHandler):
-    """HTTP handler that captures the auth code from Fyers redirect."""
-
-    auth_code = None
-
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        params = parse_qs(parsed.query)
-
-        if "auth_code" in params:
-            AuthCallbackHandler.auth_code = params["auth_code"][0]
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(
-                b"<html><body><h2>Authentication successful!</h2>"
-                b"<p>Auth code captured. You can close this tab and return to the terminal.</p>"
-                b"</body></html>"
-            )
-        elif "error" in params:
-            error_msg = params.get("error", ["unknown"])[0]
-            self.send_response(400)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(
-                f"<html><body><h2>Authentication failed</h2>"
-                f"<p>Error: {error_msg}</p></body></html>".encode()
-            )
-        else:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(
-                b"<html><body><p>Waiting for authentication...</p></body></html>"
-            )
-
-    def log_message(self, format, *args):
-        """Suppress default HTTP server logs."""
-        pass
 
 
 def _validate_auth_credentials():
@@ -86,20 +39,12 @@ def _validate_auth_credentials():
     return client_id, secret_key, redirect_uri
 
 
-def _extract_port_from_uri(redirect_uri):
-    """Extract port number from the redirect URI."""
-    parsed = urlparse(redirect_uri)
-    if parsed.port:
-        return parsed.port
-    return 8000
-
-
-def run_auth(port=None):
+def run_auth():
     """Run the Fyers OAuth2 authentication flow.
 
-    1. Start a local HTTP server to catch the redirect
-    2. Open browser to Fyers login page
-    3. Capture the auth code from redirect
+    1. Generate the auth URL
+    2. User visits the URL and logs in
+    3. User copies the auth code from the redirect URL
     4. Exchange auth code for access token
     5. Save access token to .env
     """
@@ -111,13 +56,6 @@ def run_auth(port=None):
         sys.exit(1)
 
     client_id, secret_key, redirect_uri = _validate_auth_credentials()
-
-    # Override port in redirect URI if --port was specified
-    if port is not None:
-        parsed = urlparse(redirect_uri)
-        redirect_uri = f"{parsed.scheme}://127.0.0.1:{port}/"
-    else:
-        port = _extract_port_from_uri(redirect_uri)
 
     # Create session model
     session = fyersModel.SessionModel(
@@ -136,36 +74,24 @@ def run_auth(port=None):
         print("Check that your FYERS_CLIENT_ID and FYERS_SECRET_KEY are correct.")
         sys.exit(1)
 
-    # Start local HTTP server to capture the redirect
-    AuthCallbackHandler.auth_code = None
-    server = HTTPServer(("127.0.0.1", port), AuthCallbackHandler)
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
+    # Step 1: Show the URL
+    print("\n--- Fyers Authentication ---\n")
+    print("Step 1: Open this URL in your browser and log in:\n")
+    print(auth_url)
+    print("\nStep 2: After login, you will be redirected.")
+    print("         Copy the 'auth_code' value from the redirect URL.")
+    print("         (It appears after ?auth_code= in the address bar)\n")
 
-    print(f"\nStarting Fyers authentication...")
-    print(f"Redirect server listening on http://127.0.0.1:{port}/")
-    print(f"\nOpening browser for login...")
-    print(f"If the browser doesn't open, visit this URL manually:\n{auth_url}\n")
+    # Step 2: User pastes the auth code
+    auth_code = input("Step 3: Paste the auth code here: ").strip()
 
-    webbrowser.open(auth_url)
+    if not auth_code:
+        print("\nNo auth code provided. Exiting.")
+        sys.exit(1)
 
-    # Wait for the auth code (timeout after 120 seconds)
-    timeout = 120
-    start = time.time()
-    while AuthCallbackHandler.auth_code is None:
-        if time.time() - start > timeout:
-            server.shutdown()
-            print(f"\nTimeout: No auth code received within {timeout} seconds.")
-            print("Try running the command again.")
-            sys.exit(1)
-        time.sleep(0.5)
+    print("\nGenerating access token...")
 
-    auth_code = AuthCallbackHandler.auth_code
-    server.shutdown()
-
-    print(f"Auth code received. Generating access token...")
-
-    # Exchange auth code for access token
+    # Step 3: Exchange auth code for access token
     session.set_token(auth_code)
     response = session.generate_token()
 
@@ -180,7 +106,6 @@ def run_auth(port=None):
         env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
         if not os.path.exists(env_path):
-            # Create .env from .env.example if it doesn't exist
             example_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env.example")
             if os.path.exists(example_path):
                 with open(example_path, "r") as src, open(env_path, "w") as dst:
@@ -232,21 +157,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py auth              Generate Fyers access token
-  python main.py auth --port 8080  Use custom port for redirect server
+  python main.py auth    Generate Fyers access token
         """,
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # auth command
-    auth_parser = subparsers.add_parser("auth", help="Generate Fyers access token via browser login")
-    auth_parser.add_argument(
-        "--port",
-        type=int,
-        default=None,
-        help="Port for local redirect server (default: from FYERS_REDIRECT_URI or 8000)",
-    )
+    subparsers.add_parser("auth", help="Generate Fyers access token via browser login")
 
     args = parser.parse_args()
 
@@ -255,7 +173,7 @@ Examples:
         sys.exit(0)
 
     if args.command == "auth":
-        run_auth(port=args.port)
+        run_auth()
 
 
 if __name__ == "__main__":
