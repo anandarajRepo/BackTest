@@ -770,7 +770,7 @@ class DeliveryArbitrageBacktester:
 
         trades_df = pd.DataFrame(all_trades)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"{filename_prefix}_trades_{timestamp}.csv"
+        filename = f"output/{filename_prefix}_trades_{timestamp}.csv"
         trades_df.to_csv(filename, index=False)
         print(f"\nTrades exported to: {filename}")
 
@@ -804,7 +804,7 @@ class DeliveryArbitrageBacktester:
             })
 
         summary_df = pd.DataFrame(summary_data)
-        summary_filename = f"{filename_prefix}_summary_{timestamp}.csv"
+        summary_filename = f"output/{filename_prefix}_summary_{timestamp}.csv"
         summary_df.to_csv(summary_filename, index=False)
         print(f"Summary exported to: {summary_filename}")
 

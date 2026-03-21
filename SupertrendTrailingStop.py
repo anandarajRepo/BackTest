@@ -951,8 +951,8 @@ class SupertrendTrailingStopBacktester:
         print(f"Profitable Combinations: {profitable_results}/{len(self.results)}")
 
         # Export to CSV
-        summary_df.to_csv('supertrend_trailing_stop_all_results.csv', index=False)
-        print(f"\n✅ All results exported to: supertrend_trailing_stop_all_results.csv")
+        summary_df.to_csv('output/supertrend_trailing_stop_all_results.csv', index=False)
+        print(f"\n✅ All results exported to: output/supertrend_trailing_stop_all_results.csv")
 
 
 # Main execution

@@ -775,8 +775,8 @@ class ImprovedAdvancedHeikinAshiBacktester:
         print(f"Overall Win Rate: {(winning_trades / total_trades * 100):.1f}%")
         print(f"Profitable Symbols: {profitable_symbols}/{len(self.results)}")
 
-        summary_df.to_csv('improved_heikin_ashi_results.csv', index=False)
-        print(f"\n✅ Results saved to: improved_heikin_ashi_results.csv")
+        summary_df.to_csv('output/improved_heikin_ashi_results.csv', index=False)
+        print(f"\n✅ Results saved to: output/improved_heikin_ashi_results.csv")
 
 
 if __name__ == "__main__":

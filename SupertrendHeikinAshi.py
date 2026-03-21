@@ -828,8 +828,8 @@ class SupertrendHeikinAshiBacktester:
         print(f"Profitable Symbols: {profitable_symbols}/{len(self.results)}")
 
         # Export to CSV
-        summary_df.to_csv('supertrend_heikinashi_results.csv', index=False)
-        print(f"\n✅ Results exported to: supertrend_heikinashi_results.csv")
+        summary_df.to_csv('output/supertrend_heikinashi_results.csv', index=False)
+        print(f"\n✅ Results exported to: output/supertrend_heikinashi_results.csv")
 
 
 # Main execution

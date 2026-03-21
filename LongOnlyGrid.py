@@ -690,7 +690,7 @@ class LongOnlyGridBacktester:
         print(f"  Total P&L        : ₹{total_pnl:.2f}")
         print(f"  Exit Breakdown   : TP={tp_total}  SL={sl_total}  EOD={sq_total}")
 
-        output_file = 'long_only_grid_results.csv'
+        output_file = 'output/long_only_grid_results.csv'
         summary_df.to_csv(output_file, index=False)
         print(f"\n  Results saved to: {output_file}")
 
