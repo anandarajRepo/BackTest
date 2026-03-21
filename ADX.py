@@ -847,7 +847,7 @@ class MultiDatabaseDIBacktester:
 
         # Export summary
         summary_df = self.create_summary_report()
-        summary_filename = f"{filename_prefix}_summary.csv"
+        summary_filename = f"output/{filename_prefix}_summary.csv"
         summary_df.to_csv(summary_filename, index=False)
         print(f"Summary exported to {summary_filename}")
 
@@ -861,7 +861,7 @@ class MultiDatabaseDIBacktester:
 
         if all_trades:
             combined_trades = pd.concat(all_trades, ignore_index=True)
-            trades_filename = f"{filename_prefix}_all_trades.csv"
+            trades_filename = f"output/{filename_prefix}_all_trades.csv"
             combined_trades.to_csv(trades_filename, index=False)
             print(f"All trades exported to {trades_filename}")
 
@@ -869,7 +869,7 @@ class MultiDatabaseDIBacktester:
         date_ranges = self.get_database_date_ranges()
         if date_ranges:
             db_analysis = pd.DataFrame.from_dict(date_ranges, orient='index')
-            db_filename = f"{filename_prefix}_database_analysis.csv"
+            db_filename = f"output/{filename_prefix}_database_analysis.csv"
             db_analysis.to_csv(db_filename)
             print(f"Database analysis exported to {db_filename}")
 
@@ -898,7 +898,7 @@ class MultiDatabaseDIBacktester:
         symbol_df = pd.DataFrame(symbol_analysis)
         symbol_df = symbol_df.sort_values('Total_Records', ascending=False)
 
-        symbol_filename = f"{filename_prefix}_symbol_analysis.csv"
+        symbol_filename = f"output/{filename_prefix}_symbol_analysis.csv"
         symbol_df.to_csv(symbol_filename, index=False)
         print(f"Symbol analysis exported to {symbol_filename}")
 

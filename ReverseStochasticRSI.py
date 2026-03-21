@@ -772,8 +772,8 @@ class ReverseStochasticRSIBacktester:
             print(f"Overall Win Rate   : {(winning_trades / total_trades * 100):.1f}%")
         print(f"Profitable Symbols : {profitable_symbols}/{len(self.results)}")
 
-        summary_df.to_csv('reverse_srsi_backtest_results.csv', index=False)
-        print(f"\n✅ Results saved to: reverse_srsi_backtest_results.csv")
+        summary_df.to_csv('output/reverse_srsi_backtest_results.csv', index=False)
+        print(f"\n✅ Results saved to: output/reverse_srsi_backtest_results.csv")
 
 
 # ======================================================================

@@ -1008,8 +1008,8 @@ class HorizontalFadeBreakoutBacktester:
         print(f"Profitable Symbols: {profitable_symbols}/{len(self.results)}")
         print(f"Breakout Trades: {total_breakout} | Fade Trades: {total_fade}")
 
-        summary_df.to_csv('horizontal_fade_breakout_results.csv', index=False)
-        print(f"\n✅ Results saved to: horizontal_fade_breakout_results.csv")
+        summary_df.to_csv('output/horizontal_fade_breakout_results.csv', index=False)
+        print(f"\n✅ Results saved to: output/horizontal_fade_breakout_results.csv")
 
 
 if __name__ == "__main__":

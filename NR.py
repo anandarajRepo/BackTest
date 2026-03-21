@@ -633,7 +633,7 @@ if __name__ == "__main__":
 
         if all_trades:
             trades_df = pd.DataFrame(all_trades)
-            output_file = f"nr4_nr7_trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            output_file = f"output/nr4_nr7_trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             trades_df.to_csv(output_file, index=False)
             print(f"\n💾 Trades saved to: {output_file}")
 

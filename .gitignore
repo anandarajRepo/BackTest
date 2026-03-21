@@ -179,8 +179,9 @@ dmypy.json
 cython_debug/
 
 # ===== TRADING SPECIFIC =====
-# Trading logs and data
-logs/
+# Trading logs and data (keep folder structure, ignore generated files)
+logs/*
+!logs/.gitkeep
 *.log
 trading_logs/
 strategy_logs/
@@ -358,8 +359,9 @@ playground.py
 sandbox.py
 quick_test.py
 
-# Output directories
-output/
+# Output directories (keep folder structure, ignore generated files)
+output/*
+!output/.gitkeep
 results/
 exports/
 

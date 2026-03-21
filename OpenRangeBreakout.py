@@ -1027,8 +1027,8 @@ class OpenRangeBreakoutBacktester:
         print(f"Overall Win Rate: {(winning_trades / total_trades * 100):.1f}%" if total_trades > 0 else "N/A")
         print(f"Profitable Symbols: {profitable_symbols}/{len(self.results)}")
 
-        summary_df.to_csv('orb_backtest_results.csv', index=False)
-        print(f"\n✅ Results saved to: orb_backtest_results.csv")
+        summary_df.to_csv('output/orb_backtest_results.csv', index=False)
+        print(f"\n✅ Results saved to: output/orb_backtest_results.csv")
 
 
 if __name__ == "__main__":

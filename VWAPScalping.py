@@ -921,8 +921,8 @@ class VWAPScalpingBacktester:
         print(f"Overall Win Rate: {(winning_trades / total_trades * 100):.1f}%" if total_trades > 0 else "N/A")
         print(f"Profitable Symbols: {profitable_symbols}/{len(self.results)}")
 
-        summary_df.to_csv('vwap_scalping_backtest_results.csv', index=False)
-        print(f"\nResults saved to: vwap_scalping_backtest_results.csv")
+        summary_df.to_csv('output/vwap_scalping_backtest_results.csv', index=False)
+        print(f"\nResults saved to: output/vwap_scalping_backtest_results.csv")
 
 
 if __name__ == "__main__":
