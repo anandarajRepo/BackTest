@@ -767,11 +767,32 @@ if __name__ == "__main__":
         exit(1)
 
     SYMBOLS = [
-        "NSE:SBIN-EQ",
-        "NSE:RELIANCE-EQ",
-        "NSE:TCS-EQ",
-        "NSE:INFY-EQ",
-        "NSE:HDFCBANK-EQ",
+        "NSE:URBANCO-EQ",
+        "NSE:AMANTA-EQ",
+        "NSE:VIKRAMSOLR-EQ",
+        "NSE:SHREEJISPG-EQ",
+        "NSE:PATELRMART-EQ",
+        "NSE:REGAAL-EQ",
+        "NSE:HILINFRA-EQ",
+        "NSE:SAATVIKGL-EQ",
+        "NSE:ATLANTAELE-EQ",
+        "NSE:STYL-EQ",
+        "NSE:SOLARWORLD-EQ",
+        "NSE:TRUALT-EQ",
+        "NSE:ADVANCE-EQ",
+        "NSE:LGEINDIA-EQ",
+        "NSE:RUBICON-EQ",
+        "NSE:MIDWESTLTD-EQ",
+        "NSE:ORKLAINDIA-EQ",
+        "NSE:LENSKART-EQ",
+        "NSE:GROWW-EQ",
+        "NSE:SUDEEPPHRM-EQ",
+        "NSE:EXCELSOFT-EQ",
+        "NSE:TENNIND-EQ",
+        "NSE:MEESHO-EQ",
+        "NSE:AEQUS-EQ",
+        "NSE:CORONA-EQ",
+
         "NSE:STLTECH-EQ",
         "NSE:SKYGOLD-EQ",
         "NSE:AXISCADES-EQ",
@@ -808,7 +829,7 @@ if __name__ == "__main__":
         # Trading rules
         initial_capital=100000,
         square_off_time="15:20",
-        tick_interval='5',                # 5-minute bars
+        tick_interval='5S',                # 5-Seconds bars
         last_entry_time="14:30",
         max_trades_per_day=3,
         min_risk_reward=1.5,
