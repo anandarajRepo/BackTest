@@ -751,7 +751,7 @@ if __name__ == "__main__":
         # Capital & timing
         initial_capital=100000,
         square_off_time="15:20",
-        tick_interval='5',        # 5-minute candles
+        tick_interval='5S',        # 5-minute candles
         backtest_days=30,
     )
 

@@ -843,7 +843,7 @@ if __name__ == "__main__":
         # Trading rules
         initial_capital=100000,
         square_off_time="15:20",
-        tick_interval='5',
+        tick_interval='30S',
         last_entry_time="14:30",
         max_trades_per_day=3,
         min_risk_reward=1.5,
