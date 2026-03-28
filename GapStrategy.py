@@ -84,6 +84,8 @@ class GapStrategyBacktester:
         square_off_time="15:20",
         min_data_points=100,
         max_trades_per_day=1,
+        # Backtest window
+        backtest_days=30,
     ):
         self.data_folder = data_folder
         self.db_files = self._find_database_files()
@@ -114,6 +116,7 @@ class GapStrategyBacktester:
         self.square_off_time = self._parse_time(square_off_time)
         self.min_data_points = min_data_points
         self.max_trades_per_day = max_trades_per_day
+        self.backtest_days = backtest_days
         self.ist_tz = pytz.timezone('Asia/Kolkata')
         self.results = {}
 
@@ -135,6 +138,7 @@ class GapStrategyBacktester:
         print(f"  Initial capital          : ₹{initial_capital:,}")
         print(f"  Square-off time          : {square_off_time} IST")
         print(f"  Max trades per day       : {max_trades_per_day}")
+        print(f"  Backtest window          : last {backtest_days} trading days")
         print()
 
         print(f"Found {len(self.db_files)} database file(s):")
@@ -441,8 +445,12 @@ class GapStrategyBacktester:
         daily['prev_close'] = daily['close'].shift(1)
         daily = daily.dropna(subset=['prev_close'])
 
-        # All unique trading dates in intraday candles
+        # All unique trading dates in intraday candles — restrict to last N days
         trading_dates = sorted(set(intra.index.date))
+        if self.backtest_days and len(trading_dates) > self.backtest_days:
+            trading_dates = trading_dates[-self.backtest_days:]
+        print(f"  Backtesting {len(trading_dates)} day(s): {trading_dates[0]} → {trading_dates[-1]}"
+              if trading_dates else "  No trading dates found.")
 
         # ----------------------------------------------------------------
         # Back-test loop
@@ -921,6 +929,9 @@ if __name__ == "__main__":
         initial_capital=100000,
         square_off_time="15:20",
         max_trades_per_day=1,
+
+        # Backtest window — last N trading days (mirrors OpenRangeBreakout.py)
+        backtest_days=30,
     )
 
     results = backtester.run_backtest(max_workers=4)
