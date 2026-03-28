@@ -520,7 +520,7 @@ class GapStrategyBacktester:
                             position = None
                             continue
 
-                    portfolio.append({'date': idx, 'value': cash + position['cash_committed'] + pnl if position else cash})
+                    portfolio.append({'date': idx, 'value': cash + position['cash_committed'] + self._calc_pnl(position, price) if position else cash})
                     continue
 
                 # ---- Entry logic ----
