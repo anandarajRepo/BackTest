@@ -838,9 +838,63 @@ class GapStrategyBacktester:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    SYMBOLS = [
+        "NSE:SBIN-EQ",      # State Bank of India
+        "NSE:RELIANCE-EQ",  # Reliance Industries
+        "NSE:TCS-EQ",       # Tata Consultancy Services
+        "NSE:INFY-EQ",      # Infosys
+        "NSE:HDFCBANK-EQ",   # HDFC Bank
+
+        "NSE:URBANCO-EQ",
+        "NSE:AMANTA-EQ",
+        "NSE:VIKRAMSOLR-EQ",
+        "NSE:SHREEJISPG-EQ",
+        "NSE:PATELRMART-EQ",
+        "NSE:REGAAL-EQ",
+        "NSE:HILINFRA-EQ",
+        "NSE:SAATVIKGL-EQ",
+        "NSE:ATLANTAELE-EQ",
+        "NSE:STYL-EQ",
+        "NSE:SOLARWORLD-EQ",
+        "NSE:TRUALT-EQ",
+        "NSE:ADVANCE-EQ",
+        "NSE:LGEINDIA-EQ",
+        "NSE:RUBICON-EQ",
+        "NSE:MIDWESTLTD-EQ",
+        "NSE:ORKLAINDIA-EQ",
+        "NSE:LENSKART-EQ",
+        "NSE:GROWW-EQ",
+        "NSE:SUDEEPPHRM-EQ",
+        "NSE:EXCELSOFT-EQ",
+        "NSE:TENNIND-EQ",
+        "NSE:MEESHO-EQ",
+        "NSE:AEQUS-EQ",
+        "NSE:CORONA-EQ",
+
+        # Favourite Stocks
+        "NSE:STLTECH-EQ",
+        "NSE:SKYGOLD-EQ",
+        "NSE:AXISCADES-EQ",
+        "BSE:SATTRIX-M"
+
+        "NSE:AWHCL-EQ",
+        "NSE:KAPSTON-EQ",
+
+        "NSE:NIFTY2621025800CE",
+        "NSE:NIFTY2621025800PE",
+        "NSE:NIFTY2621025600CE",
+        "NSE:NIFTY2621025600PE",
+        "NSE:FINNIFTY26FEB27700CE",
+        "NSE:FINNIFTY26FEB27700PE",
+        "NSE:MIDCPNIFTY26FEB14000CE",
+        "NSE:MIDCPNIFTY26FEB14000PE",
+        "NSE:BANKNIFTY26FEB60000CE",
+        "NSE:BANKNIFTY26FEB60000PE"
+    ]
+
     backtester = GapStrategyBacktester(
         data_folder="data",
-        symbols=None,              # auto-detect from .db files
+        symbols=SYMBOLS,
 
         # Gap detection
         gap_threshold_pct=0.3,    # minimum 0.3% gap to qualify
