@@ -1,13 +1,14 @@
-import sqlite3
 import pandas as pd
 import numpy as np
-import json
-import glob
 import os
 from datetime import datetime, time, timedelta
 import pytz
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
+from fyers_apiv3 import fyersModel
+from dotenv import load_dotenv
+
+load_dotenv()
 
 warnings.filterwarnings('ignore')
 
@@ -60,7 +61,8 @@ class GapStrategyBacktester:
 
     def __init__(
         self,
-        data_folder="data",
+        fyers_client_id,
+        fyers_access_token,
         symbols=None,
         # Gap detection
         gap_threshold_pct=0.3,
@@ -87,8 +89,20 @@ class GapStrategyBacktester:
         # Backtest window
         backtest_days=30,
     ):
-        self.data_folder = data_folder
-        self.db_files = self._find_database_files()
+        # Initialize Fyers client
+        self.fyers = fyersModel.FyersModel(client_id=fyers_client_id, token=fyers_access_token, is_async=False, log_path="")
+
+        # Date range: fetch enough history for behaviour lookback + backtest window
+        self.backtest_days = backtest_days
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        end_date = datetime.now(ist_tz)
+        total_days = backtest_days + behavior_lookback_days + 30  # 30-day buffer
+        start_date = end_date - timedelta(days=total_days)
+        self.range_from = int(start_date.timestamp())
+        self.range_to = int(end_date.timestamp())
+
+        # Derive Fyers API resolution from candle_interval (e.g. "5min" → "5")
+        self.fyers_resolution = candle_interval.replace('min', '').replace('T', '').strip()
 
         # Gap parameters
         self.gap_threshold_pct = gap_threshold_pct / 100
@@ -116,14 +130,15 @@ class GapStrategyBacktester:
         self.square_off_time = self._parse_time(square_off_time)
         self.min_data_points = min_data_points
         self.max_trades_per_day = max_trades_per_day
-        self.backtest_days = backtest_days
         self.ist_tz = pytz.timezone('Asia/Kolkata')
         self.results = {}
 
         print("=" * 70)
         print("     GAP UP / GAP DOWN STRATEGY BACKTESTER")
         print("=" * 70)
-        print(f"  Data folder              : {self.data_folder}")
+        print(f"  Data source              : Fyers API")
+        print(f"  Backtest period          : last {backtest_days} trading days")
+        print(f"  Date range               : {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
         print(f"  Gap threshold            : {gap_threshold_pct}% – {max_gap_pct}%")
         print(f"  Behaviour lookback       : {behavior_lookback_days} days")
         print(f"  Min gap history required : {min_gap_history} events")
@@ -138,16 +153,11 @@ class GapStrategyBacktester:
         print(f"  Initial capital          : ₹{initial_capital:,}")
         print(f"  Square-off time          : {square_off_time} IST")
         print(f"  Max trades per day       : {max_trades_per_day}")
-        print(f"  Backtest window          : last {backtest_days} trading days")
         print()
 
-        print(f"Found {len(self.db_files)} database file(s):")
-        for f in self.db_files:
-            print(f"  - {os.path.basename(f)}")
-
         if symbols is None:
-            print("\nAuto-detecting symbols …")
-            self.symbols = self._auto_detect_symbols()
+            self.symbols = ["NSE:SBIN-EQ", "NSE:RELIANCE-EQ", "NSE:TCS-EQ"]
+            print(f"Using default symbols: {self.symbols}")
         else:
             self.symbols = symbols
 
@@ -167,119 +177,58 @@ class GapStrategyBacktester:
             print(f"  WARNING: Invalid time '{time_str}', using 15:20 as fallback.")
             return time(15, 20)
 
-    def _find_database_files(self):
-        if not os.path.exists(self.data_folder):
-            print(f"WARNING: Data folder '{self.data_folder}' not found.")
-            return []
-        files = sorted(glob.glob(os.path.join(self.data_folder, "*.db")))
-        if not files:
-            print(f"WARNING: No .db files found in '{self.data_folder}'.")
-        return files
-
     # ------------------------------------------------------------------
-    # Symbol auto-detection
+    # Data loading — Fyers API
     # ------------------------------------------------------------------
 
-    def _auto_detect_symbols(self):
-        all_symbols = {}
-        for db_file in self.db_files:
-            try:
-                conn = sqlite3.connect(db_file)
-                df = pd.read_sql_query(
-                    """SELECT symbol, COUNT(*) as cnt
-                       FROM market_data GROUP BY symbol
-                       HAVING COUNT(*) >= ?""",
-                    conn, params=(self.min_data_points,)
-                )
-                conn.close()
-                for _, row in df.iterrows():
-                    sym = row['symbol']
-                    all_symbols[sym] = all_symbols.get(sym, 0) + row['cnt']
-            except Exception as e:
-                print(f"  Error scanning {db_file}: {e}")
+    def _load_data_from_fyers(self, symbol):
+        """Load historical OHLCV candles from Fyers API."""
+        try:
+            print(f"  Fetching data from Fyers for {symbol}...")
+            data = {
+                "symbol": symbol,
+                "resolution": self.fyers_resolution,
+                "date_format": "0",
+                "range_from": str(self.range_from),
+                "range_to": str(self.range_to),
+                "cont_flag": "1"
+            }
+            response = self.fyers.history(data=data)
 
-        filtered = [s for s, cnt in all_symbols.items() if cnt >= self.min_data_points]
-        filtered.sort()
+            if response.get('s') != 'ok' or 'candles' not in response:
+                print(f"  Error fetching data: {response.get('message', 'No candles data')}")
+                return None
 
-        print(f"\n  {'Symbol':<28} {'Total Records'}")
-        print("  " + "-" * 45)
-        for s in filtered:
-            print(f"  {s:<28} {all_symbols[s]}")
-        print(f"\n  → {len(filtered)} symbol(s) qualified.")
-        return filtered
+            candles = response['candles']
+            if not candles:
+                print(f"  No data available for {symbol}")
+                return None
 
-    # ------------------------------------------------------------------
-    # Data loading
-    # ------------------------------------------------------------------
+            df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+            df = df.set_index('timestamp')
+            df.index = df.index.tz_localize('UTC').tz_convert(self.ist_tz)
+            df.index = df.index.tz_localize(None)
+            df = df.between_time('09:00', '15:30')
+            df = df.dropna(subset=['open', 'close', 'high', 'low'])
 
-    def _load_tick_data(self, symbol):
-        """Load raw tick data for *symbol* across all databases."""
-        frames = []
-        for db_file in self.db_files:
-            try:
-                conn = sqlite3.connect(db_file)
-                df = pd.read_sql_query(
-                    """SELECT timestamp, ltp, high_price, low_price,
-                              close_price, volume, raw_data
-                       FROM market_data WHERE symbol = ?
-                       ORDER BY timestamp""",
-                    conn, params=(symbol,)
-                )
-                conn.close()
-                if df.empty:
-                    continue
+            print(f"  Loaded {len(df)} candles from {df.index[0].date()} to {df.index[-1].date()}")
+            return df[['open', 'high', 'low', 'close', 'volume']].copy()
 
-                # Parse raw_data for better OHLV fields
-                def _parse(raw):
-                    try:
-                        d = json.loads(raw) if raw else {}
-                        return pd.Series({
-                            'h_raw': d.get('high_price', np.nan),
-                            'l_raw': d.get('low_price', np.nan),
-                            'v_raw': d.get('vol_traded_today', 0),
-                        })
-                    except Exception:
-                        return pd.Series({'h_raw': np.nan, 'l_raw': np.nan, 'v_raw': 0})
-
-                parsed = df['raw_data'].apply(_parse)
-                df = pd.concat([df, parsed], axis=1)
-
-                df['high']   = df['h_raw'].fillna(df['high_price']).fillna(df['ltp'])
-                df['low']    = df['l_raw'].fillna(df['low_price']).fillna(df['ltp'])
-                df['close']  = df['close_price'].fillna(df['ltp'])
-                df['volume'] = df['v_raw'].fillna(df['volume']).fillna(0)
-
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
-                df = df.set_index('timestamp')
-                df = df.dropna(subset=['close', 'high', 'low'])
-                frames.append(df[['close', 'high', 'low', 'volume']].copy())
-
-            except Exception as e:
-                print(f"    Error loading {symbol} from {os.path.basename(db_file)}: {e}")
-
-        if not frames:
+        except Exception as e:
+            print(f"  Error loading data for {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
-        combined = pd.concat(frames)
-        combined = combined.sort_index()
-        combined = combined[~combined.index.duplicated(keep='first')]
-        return combined
-
-    def _to_candles(self, tick_df, interval):
-        """Resample tick data to OHLCV candles of given pandas offset alias."""
-        agg = {'close': 'last', 'high': 'max', 'low': 'min', 'volume': 'sum'}
-        candles = tick_df.resample(interval).agg(agg)
-        candles['open'] = tick_df['close'].resample(interval).first()
-        candles = candles.dropna(subset=['open', 'close'])
-        return candles[['open', 'high', 'low', 'close', 'volume']]
-
-    def _to_daily_candles(self, tick_df):
-        """Build daily OHLCV candles restricted to NSE session (9:15–15:30)."""
-        # Filter to market hours so overnight ticks don't pollute daily candles
-        session = tick_df.between_time('09:15', '15:30')
+    def _to_daily_candles(self, df):
+        """Build daily OHLCV candles from intraday OHLCV, restricted to NSE session."""
+        session = df.between_time('09:15', '15:30')
         if session.empty:
-            return self._to_candles(tick_df, 'D')
-        return self._to_candles(session, 'D')
+            session = df
+        agg = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
+        daily = session.resample('D').agg(agg)
+        return daily.dropna(subset=['open', 'close'])
 
     # ------------------------------------------------------------------
     # ATR calculation
@@ -422,17 +371,15 @@ class GapStrategyBacktester:
         print(f"  Backtesting: {symbol}")
         print(f"{'='*60}")
 
-        # Load data
-        tick_data = self._load_tick_data(symbol)
-        if tick_data is None or len(tick_data) < self.min_data_points:
+        # Load data from Fyers
+        intra = self._load_data_from_fyers(symbol)
+        if intra is None or len(intra) < self.min_data_points:
             print(f"  Insufficient data for {symbol}. Skipping.")
             return None
 
-        print(f"  Loaded {len(tick_data):,} tick records.")
-
-        # Build daily and intraday candles
-        daily  = self._to_daily_candles(tick_data)
-        intra  = self._to_candles(tick_data.between_time('09:15', '15:30'), self.candle_interval)
+        # Build daily candles from intraday data
+        daily = self._to_daily_candles(intra)
+        intra = intra.between_time('09:15', '15:30')
 
         if daily.empty or len(daily) < self.behavior_lookback_days + 2:
             print(f"  Not enough daily data for {symbol}. Skipping.")
@@ -846,6 +793,14 @@ class GapStrategyBacktester:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    FYERS_CLIENT_ID = os.environ.get('FYERS_CLIENT_ID')
+    FYERS_ACCESS_TOKEN = os.environ.get('FYERS_ACCESS_TOKEN')
+
+    if not FYERS_CLIENT_ID or not FYERS_ACCESS_TOKEN:
+        print("\nERROR: Missing Fyers API credentials!")
+        print("  Set FYERS_CLIENT_ID and FYERS_ACCESS_TOKEN in your .env file.")
+        exit(1)
+
     SYMBOLS = [
         "NSE:SBIN-EQ",      # State Bank of India
         "NSE:RELIANCE-EQ",  # Reliance Industries
@@ -901,7 +856,8 @@ if __name__ == "__main__":
     ]
 
     backtester = GapStrategyBacktester(
-        data_folder="data",
+        fyers_client_id=FYERS_CLIENT_ID,
+        fyers_access_token=FYERS_ACCESS_TOKEN,
         symbols=SYMBOLS,
 
         # Gap detection
