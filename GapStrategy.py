@@ -405,6 +405,7 @@ class GapStrategyBacktester:
         cash        = self.initial_capital
         trades      = []
         portfolio   = []
+        position    = None
 
         for tdate in trading_dates:
             ts_date = pd.Timestamp(tdate)
