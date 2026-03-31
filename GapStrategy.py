@@ -844,16 +844,16 @@ if __name__ == "__main__":
         "NSE:AWHCL-EQ",
         "NSE:KAPSTON-EQ",
 
-        "NSE:NIFTY2621025800CE",
-        "NSE:NIFTY2621025800PE",
-        "NSE:NIFTY2621025600CE",
-        "NSE:NIFTY2621025600PE",
-        "NSE:FINNIFTY26FEB27700CE",
-        "NSE:FINNIFTY26FEB27700PE",
-        "NSE:MIDCPNIFTY26FEB14000CE",
-        "NSE:MIDCPNIFTY26FEB14000PE",
-        "NSE:BANKNIFTY26FEB60000CE",
-        "NSE:BANKNIFTY26FEB60000PE"
+        # "NSE:NIFTY2621025800CE",
+        # "NSE:NIFTY2621025800PE",
+        # "NSE:NIFTY2621025600CE",
+        # "NSE:NIFTY2621025600PE",
+        # "NSE:FINNIFTY26FEB27700CE",
+        # "NSE:FINNIFTY26FEB27700PE",
+        # "NSE:MIDCPNIFTY26FEB14000CE",
+        # "NSE:MIDCPNIFTY26FEB14000PE",
+        # "NSE:BANKNIFTY26FEB60000CE",
+        # "NSE:BANKNIFTY26FEB60000PE"
     ]
 
     backtester = GapStrategyBacktester(
@@ -862,7 +862,7 @@ if __name__ == "__main__":
         symbols=SYMBOLS,
 
         # Gap detection
-        gap_threshold_pct=0.3,    # minimum 0.3% gap to qualify
+        gap_threshold_pct=1.0,    # minimum 0.3% gap to qualify
         max_gap_pct=5.0,          # ignore gaps larger than 5% (news/earnings)
 
         # Historical behaviour analysis
@@ -872,8 +872,8 @@ if __name__ == "__main__":
         reversal_threshold=0.55,
 
         # Entry
-        entry_candles=3,           # enter within first 3 × 5-min candles after open
-        candle_interval="5min",
+        entry_candles=12,           # enter within first 3 × 5-min candles after open
+        candle_interval="5S",
         last_entry_time="09:45",   # no new entries after 9:45 AM
 
         # Risk
