@@ -842,7 +842,7 @@ if __name__ == "__main__":
         "NSE:AEQUS-EQ",
         "NSE:CORONA-EQ",
 
-        Favourite Stocks
+        # Favourite Stocks
         "NSE:STLTECH-EQ",
         "NSE:SKYGOLD-EQ",
         "NSE:AXISCADES-EQ",
