@@ -707,10 +707,10 @@ class GapStrategyBacktester:
 
         Returns a float in [0, 1].  Higher is better.
         """
-        win_rate_score = result['win_rate'] / 100.0
-        pf_capped = min(result['profit_factor'], 5.0)
+        win_rate_score = result.get('win_rate', 0.0) / 100.0
+        pf_capped = min(result.get('profit_factor', 0.0), 5.0)
         pf_score = pf_capped / 5.0
-        ret_capped = max(0.0, min(result['return_pct'], 20.0))
+        ret_capped = max(0.0, min(result.get('return_pct', 0.0), 20.0))
         ret_score = ret_capped / 20.0
         return 0.40 * win_rate_score + 0.40 * pf_score + 0.20 * ret_score
 
