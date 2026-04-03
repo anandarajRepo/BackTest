@@ -597,6 +597,13 @@ class GapStrategyBacktester:
             return position['shares'] * (position['entry_price'] - exit_price)
 
     def _make_trade_record(self, position, exit_price, exit_time, reason, pnl, cash_after):
+        pnl_sign = "+" if pnl >= 0 else ""
+        print(
+            f"           └─ Exit [{reason}] "
+            f"Entry: {position['entry_time'].strftime('%Y-%m-%d %H:%M')} @ ₹{position['entry_price']:.2f} | "
+            f"Exit: {exit_time.strftime('%Y-%m-%d %H:%M')} @ ₹{exit_price:.2f} | "
+            f"P&L: {pnl_sign}₹{pnl:,.2f}"
+        )
         return {
             'symbol'          : position['symbol'],
             'trade_date'      : str(position['date']),
