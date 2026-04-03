@@ -88,6 +88,11 @@ class GapStrategyBacktester:
             max_trades_per_day=1,
             # Backtest window
             backtest_days=30,
+            # Stock performance filter thresholds
+            min_win_rate=50.0,
+            min_profit_factor=1.0,
+            min_trades_required=3,
+            max_loss_rate=60.0,
     ):
         # Initialize Fyers client
         self.fyers = fyersModel.FyersModel(client_id=fyers_client_id, token=fyers_access_token, is_async=False, log_path="")
@@ -133,6 +138,12 @@ class GapStrategyBacktester:
         self.ist_tz = pytz.timezone('Asia/Kolkata')
         self.results = {}
 
+        # Stock filter thresholds
+        self.min_win_rate = min_win_rate
+        self.min_profit_factor = min_profit_factor
+        self.min_trades_required = min_trades_required
+        self.max_loss_rate = max_loss_rate
+
         print("=" * 70)
         print("     GAP UP / GAP DOWN STRATEGY BACKTESTER")
         print("=" * 70)
@@ -153,6 +164,10 @@ class GapStrategyBacktester:
         print(f"  Initial capital          : ₹{initial_capital:,}")
         print(f"  Square-off time          : {square_off_time} IST")
         print(f"  Max trades per day       : {max_trades_per_day}")
+        print(f"  Stock filter — min win rate     : {min_win_rate}%")
+        print(f"  Stock filter — min profit factor: {min_profit_factor}")
+        print(f"  Stock filter — min trades req.  : {min_trades_required}")
+        print(f"  Stock filter — max loss rate    : {max_loss_rate}%")
         print()
 
         if symbols is None:
@@ -678,6 +693,162 @@ class GapStrategyBacktester:
         }
 
     # ------------------------------------------------------------------
+    # Stock performance filtering & ranking
+    # ------------------------------------------------------------------
+
+    def _score_symbol(self, result):
+        """
+        Compute a composite performance score for a symbol.
+
+        Score components (all normalised to 0-1 range):
+          - Win rate (40%): win_rate / 100
+          - Profit factor (40%): capped at 5.0, normalised to [0, 1]
+          - Return % (20%): capped at +20%, normalised to [0, 1]
+
+        Returns a float in [0, 1].  Higher is better.
+        """
+        win_rate_score = result['win_rate'] / 100.0
+        pf_capped = min(result['profit_factor'], 5.0)
+        pf_score = pf_capped / 5.0
+        ret_capped = max(0.0, min(result['return_pct'], 20.0))
+        ret_score = ret_capped / 20.0
+        return 0.40 * win_rate_score + 0.40 * pf_score + 0.20 * ret_score
+
+    def filter_symbols_by_performance(self):
+        """
+        Evaluate every symbol in self.results against the configured
+        thresholds and return a dict with:
+
+            {
+                'qualified': [(symbol, score, result), ...],   # sorted best→worst
+                'excluded':  [(symbol, reason, result), ...],  # sorted worst→best
+            }
+
+        Pass criteria (ALL must hold):
+          1. total_trades >= min_trades_required   (enough history)
+          2. win_rate     >= min_win_rate           (enough winners)
+          3. profit_factor >= min_profit_factor     (gross-win > gross-loss)
+          4. loss_rate    <= max_loss_rate          (not too many losers)
+          5. net_pnl      >  0                      (overall profitable)
+        """
+        qualified = []
+        excluded = []
+
+        for sym, result in self.results.items():
+            total = result.get('total_trades', 0)
+
+            # Not enough trades to evaluate reliably
+            if total < self.min_trades_required:
+                excluded.append((sym, f"too few trades ({total} < {self.min_trades_required})", result))
+                continue
+
+            win_rate = result.get('win_rate', 0.0)
+            loss_rate = 100.0 - win_rate
+            pf = result.get('profit_factor', 0.0)
+            net_pnl = result.get('net_pnl', 0.0)
+
+            failures = []
+            if win_rate < self.min_win_rate:
+                failures.append(f"win_rate {win_rate:.1f}% < {self.min_win_rate}%")
+            if pf < self.min_profit_factor:
+                failures.append(f"profit_factor {pf:.2f} < {self.min_profit_factor}")
+            if loss_rate > self.max_loss_rate:
+                failures.append(f"loss_rate {loss_rate:.1f}% > {self.max_loss_rate}%")
+            if net_pnl <= 0:
+                failures.append(f"net_pnl ₹{net_pnl:,.0f} ≤ 0")
+
+            if failures:
+                excluded.append((sym, "; ".join(failures), result))
+            else:
+                score = self._score_symbol(result)
+                qualified.append((sym, score, result))
+
+        # Sort qualified best → worst; excluded worst → best (score)
+        qualified.sort(key=lambda x: x[1], reverse=True)
+        excluded.sort(key=lambda x: self._score_symbol(x[2]))
+
+        return {'qualified': qualified, 'excluded': excluded}
+
+    def rank_symbols_by_performance(self):
+        """
+        Return ALL symbols sorted by composite score (best first),
+        regardless of pass/fail status.  Useful for tiered views.
+        """
+        ranked = []
+        for sym, result in self.results.items():
+            if result.get('total_trades', 0) == 0:
+                continue
+            score = self._score_symbol(result)
+            ranked.append((sym, score, result))
+        ranked.sort(key=lambda x: x[1], reverse=True)
+        return ranked
+
+    def get_qualified_symbols(self):
+        """
+        Return only the symbol strings that passed all performance filters.
+        Ready to use as the `symbols` list for a live/paper session.
+        """
+        filtered = self.filter_symbols_by_performance()
+        return [sym for sym, _score, _r in filtered['qualified']]
+
+    def print_filter_report(self):
+        """
+        Print a ranked table showing which stocks qualify for live orders
+        and which are blocked, with reasons.
+        """
+        filtered = self.filter_symbols_by_performance()
+        qualified = filtered['qualified']
+        excluded = filtered['excluded']
+
+        print("\n")
+        print("=" * 95)
+        print("               STOCK PERFORMANCE FILTER REPORT  —  GAP STRATEGY")
+        print("=" * 95)
+        print(
+            f"  Filters: win_rate≥{self.min_win_rate}%  |  "
+            f"profit_factor≥{self.min_profit_factor}  |  "
+            f"trades≥{self.min_trades_required}  |  "
+            f"loss_rate≤{self.max_loss_rate}%  |  net_pnl>0"
+        )
+        print("=" * 95)
+
+        # ---- QUALIFIED (ORDER ALLOWED) ----
+        print(f"\n  QUALIFIED — {len(qualified)} symbol(s) eligible for order placement\n")
+        print(f"  {'Rank':<5} {'Symbol':<25} {'Score':>6} {'Trades':>6} {'WinRate':>8} "
+              f"{'PF':>6} {'NetPnL':>10} {'Return%':>8}")
+        print("  " + "-" * 80)
+        for rank, (sym, score, r) in enumerate(qualified, 1):
+            print(
+                f"  {rank:<5} {sym:<25} {score:>6.3f} {r['total_trades']:>6} "
+                f"{r['win_rate']:>7.1f}% {r['profit_factor']:>6.2f} "
+                f"₹{r['net_pnl']:>9,.0f} {r['return_pct']:>7.2f}%"
+            )
+        if not qualified:
+            print("  (none)")
+
+        # ---- EXCLUDED (ORDER BLOCKED) ----
+        print(f"\n  EXCLUDED — {len(excluded)} symbol(s) blocked from order placement\n")
+        print(f"  {'Symbol':<25} {'Trades':>6} {'WinRate':>8} {'PF':>6} {'NetPnL':>10}  Reason")
+        print("  " + "-" * 90)
+        for sym, reason, r in excluded:
+            total = r.get('total_trades', 0)
+            if total == 0:
+                print(f"  {sym:<25} {'0':>6}  {'N/A':>8}  {'N/A':>6}  {'N/A':>10}  {reason}")
+            else:
+                print(
+                    f"  {sym:<25} {total:>6} {r['win_rate']:>7.1f}% "
+                    f"{r['profit_factor']:>6.2f} ₹{r['net_pnl']:>9,.0f}  {reason}"
+                )
+        if not excluded:
+            print("  (none)")
+
+        print("\n" + "=" * 95)
+        print(f"  ORDER PLACEMENT SUMMARY: {len(qualified)} APPROVED  |  {len(excluded)} BLOCKED")
+        print("=" * 95)
+
+        return filtered
+
+    # ------------------------------------------------------------------
     # Run all symbols
     # ------------------------------------------------------------------
 
@@ -701,6 +872,7 @@ class GapStrategyBacktester:
                     print(f"  ERROR backtesting {sym}: {e}")
 
         self.print_summary()
+        self.print_filter_report()
         self._save_results()
         return self.results
 
@@ -794,6 +966,40 @@ class GapStrategyBacktester:
             sum_path = os.path.join("output", f"gap_strategy_summary_{ts}.csv")
             pd.DataFrame(summary_rows).to_csv(sum_path, index=False)
             print(f"  Summary saved    → {sum_path}")
+
+        # Filter report CSV — which stocks are approved/blocked for live orders
+        filtered = self.filter_symbols_by_performance()
+        filter_rows = []
+        for rank, (sym, score, r) in enumerate(filtered['qualified'], 1):
+            filter_rows.append({
+                'rank': rank,
+                'symbol': sym,
+                'status': 'QUALIFIED',
+                'score': round(score, 4),
+                'total_trades': r.get('total_trades', 0),
+                'win_rate': r.get('win_rate', 0),
+                'profit_factor': r.get('profit_factor', 0),
+                'net_pnl': r.get('net_pnl', 0),
+                'return_pct': r.get('return_pct', 0),
+                'rejection_reason': '',
+            })
+        for sym, reason, r in filtered['excluded']:
+            filter_rows.append({
+                'rank': '',
+                'symbol': sym,
+                'status': 'EXCLUDED',
+                'score': round(self._score_symbol(r), 4) if r.get('total_trades', 0) > 0 else 0,
+                'total_trades': r.get('total_trades', 0),
+                'win_rate': r.get('win_rate', 0),
+                'profit_factor': r.get('profit_factor', 0),
+                'net_pnl': r.get('net_pnl', 0),
+                'return_pct': r.get('return_pct', 0),
+                'rejection_reason': reason,
+            })
+        if filter_rows:
+            filter_path = os.path.join("output", f"gap_strategy_filter_{ts}.csv")
+            pd.DataFrame(filter_rows).to_csv(filter_path, index=False)
+            print(f"  Filter report    → {filter_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -967,6 +1173,35 @@ if __name__ == "__main__":
 
         # Backtest window — last N trading days (mirrors OpenRangeBreakout.py)
         backtest_days=30,
+
+        # Stock performance filter — controls which stocks get live orders
+        # A stock must satisfy ALL four conditions to be QUALIFIED:
+        #   win_rate >= min_win_rate
+        #   profit_factor >= min_profit_factor
+        #   loss_rate <= max_loss_rate
+        #   net_pnl > 0
+        min_win_rate=50.0,        # At least 50% of trades must be winners
+        min_profit_factor=1.0,    # Gross wins must exceed gross losses
+        min_trades_required=3,    # Need at least 3 trades to evaluate reliability
+        max_loss_rate=60.0,       # No more than 60% losing trades allowed
     )
 
     results = backtester.run_backtest(max_workers=4)
+
+    # ----------------------------------------------------------------
+    # After the backtest, retrieve only the stocks that PASSED all
+    # performance filters — these are safe to route live orders to.
+    # ----------------------------------------------------------------
+    qualified_symbols = backtester.get_qualified_symbols()
+
+    print("\n" + "=" * 70)
+    print("  LIVE ORDER ROUTING — APPROVED SYMBOLS")
+    print("=" * 70)
+    if qualified_symbols:
+        print(f"  {len(qualified_symbols)} symbol(s) approved for live / paper orders:\n")
+        for sym in qualified_symbols:
+            print(f"    ✔  {sym}")
+    else:
+        print("  No symbols passed the performance filter.")
+        print("  Consider relaxing min_win_rate / min_profit_factor thresholds.")
+    print("=" * 70)
