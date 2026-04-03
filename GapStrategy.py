@@ -60,34 +60,34 @@ class GapStrategyBacktester:
     """
 
     def __init__(
-        self,
-        fyers_client_id,
-        fyers_access_token,
-        symbols=None,
-        # Gap detection
-        gap_threshold_pct=0.3,
-        max_gap_pct=5.0,
-        # Historical behaviour analysis
-        behavior_lookback_days=30,
-        min_gap_history=5,
-        continuation_threshold=0.55,
-        reversal_threshold=0.55,
-        # Entry timing
-        entry_candles=3,
-        candle_interval="5min",
-        last_entry_time="09:45",
-        # Risk management
-        atr_period=14,
-        trailing_stop_atr_mult=1.5,
-        initial_stop_atr_mult=2.0,
-        target_atr_mult=3.0,
-        # Capital / session
-        initial_capital=100000,
-        square_off_time="15:20",
-        min_data_points=100,
-        max_trades_per_day=1,
-        # Backtest window
-        backtest_days=30,
+            self,
+            fyers_client_id,
+            fyers_access_token,
+            symbols=None,
+            # Gap detection
+            gap_threshold_pct=0.3,
+            max_gap_pct=5.0,
+            # Historical behaviour analysis
+            behavior_lookback_days=30,
+            min_gap_history=5,
+            continuation_threshold=0.55,
+            reversal_threshold=0.55,
+            # Entry timing
+            entry_candles=3,
+            candle_interval="5min",
+            last_entry_time="09:45",
+            # Risk management
+            atr_period=14,
+            trailing_stop_atr_mult=1.5,
+            initial_stop_atr_mult=2.0,
+            target_atr_mult=3.0,
+            # Capital / session
+            initial_capital=100000,
+            square_off_time="15:20",
+            min_data_points=100,
+            max_trades_per_day=1,
+            # Backtest window
+            backtest_days=30,
     ):
         # Initialize Fyers client
         self.fyers = fyersModel.FyersModel(client_id=fyers_client_id, token=fyers_access_token, is_async=False, log_path="")
@@ -235,14 +235,14 @@ class GapStrategyBacktester:
     # ------------------------------------------------------------------
 
     def _calc_atr(self, candles):
-        high  = candles['high']
-        low   = candles['low']
+        high = candles['high']
+        low = candles['low']
         close = candles['close']
         prev_close = close.shift(1)
         tr = pd.concat([
             high - low,
             (high - prev_close).abs(),
-            (low  - prev_close).abs()
+            (low - prev_close).abs()
         ], axis=1).max(axis=1)
         return tr.rolling(self.atr_period, min_periods=1).mean()
 
@@ -266,13 +266,13 @@ class GapStrategyBacktester:
             gap_down_count             : int
         """
         cutoff_start = pd.Timestamp(analysis_date) - pd.Timedelta(days=self.behavior_lookback_days)
-        cutoff_end   = pd.Timestamp(analysis_date) - pd.Timedelta(days=1)
+        cutoff_end = pd.Timestamp(analysis_date) - pd.Timedelta(days=1)
 
         # Only dates in the lookback window, BEFORE analysis_date (no lookahead)
         historical = daily_candles[
             (daily_candles.index >= cutoff_start) &
-            (daily_candles.index <  pd.Timestamp(analysis_date))
-        ].copy()
+            (daily_candles.index < pd.Timestamp(analysis_date))
+            ].copy()
 
         if len(historical) < 2:
             return None
@@ -293,12 +293,12 @@ class GapStrategyBacktester:
         # Behaviour: did price close above or below open?
         # continuation for gap-up  → close > open
         # continuation for gap-down → close < open
-        historical['gap_up_continuation']   = (historical['gap_type'] == 'UP')   & (historical['close'] > historical['open'])
-        historical['gap_up_reversal']        = (historical['gap_type'] == 'UP')   & (historical['close'] < historical['open'])
-        historical['gap_down_continuation']  = (historical['gap_type'] == 'DOWN') & (historical['close'] < historical['open'])
-        historical['gap_down_reversal']      = (historical['gap_type'] == 'DOWN') & (historical['close'] > historical['open'])
+        historical['gap_up_continuation'] = (historical['gap_type'] == 'UP') & (historical['close'] > historical['open'])
+        historical['gap_up_reversal'] = (historical['gap_type'] == 'UP') & (historical['close'] < historical['open'])
+        historical['gap_down_continuation'] = (historical['gap_type'] == 'DOWN') & (historical['close'] < historical['open'])
+        historical['gap_down_reversal'] = (historical['gap_type'] == 'DOWN') & (historical['close'] > historical['open'])
 
-        gap_up_rows   = historical[historical['gap_type'] == 'UP']
+        gap_up_rows = historical[historical['gap_type'] == 'UP']
         gap_down_rows = historical[historical['gap_type'] == 'DOWN']
 
         def _rate(mask_series, total_df):
@@ -307,12 +307,12 @@ class GapStrategyBacktester:
             return mask_series.sum() / len(total_df)
 
         result = {
-            'gap_up_count'               : len(gap_up_rows),
-            'gap_up_continuation_rate'   : _rate(gap_up_rows['gap_up_continuation'],   gap_up_rows),
-            'gap_up_reversal_rate'        : _rate(gap_up_rows['gap_up_reversal'],        gap_up_rows),
-            'gap_down_count'             : len(gap_down_rows),
-            'gap_down_continuation_rate' : _rate(gap_down_rows['gap_down_continuation'], gap_down_rows),
-            'gap_down_reversal_rate'      : _rate(gap_down_rows['gap_down_reversal'],     gap_down_rows),
+            'gap_up_count': len(gap_up_rows),
+            'gap_up_continuation_rate': _rate(gap_up_rows['gap_up_continuation'], gap_up_rows),
+            'gap_up_reversal_rate': _rate(gap_up_rows['gap_up_reversal'], gap_up_rows),
+            'gap_down_count': len(gap_down_rows),
+            'gap_down_continuation_rate': _rate(gap_down_rows['gap_down_continuation'], gap_down_rows),
+            'gap_down_reversal_rate': _rate(gap_down_rows['gap_down_reversal'], gap_down_rows),
         }
         return result
 
@@ -341,7 +341,7 @@ class GapStrategyBacktester:
             if count < self.min_gap_history:
                 return None
             cont = stats['gap_up_continuation_rate']
-            rev  = stats['gap_up_reversal_rate']
+            rev = stats['gap_up_reversal_rate']
             if cont >= self.continuation_threshold and cont > rev:
                 return 'LONG'
             if rev >= self.reversal_threshold and rev > cont:
@@ -353,7 +353,7 @@ class GapStrategyBacktester:
             if count < self.min_gap_history:
                 return None
             cont = stats['gap_down_continuation_rate']
-            rev  = stats['gap_down_reversal_rate']
+            rev = stats['gap_down_reversal_rate']
             if cont >= self.continuation_threshold and cont > rev:
                 return 'SHORT'
             if rev >= self.reversal_threshold and rev > cont:
@@ -367,9 +367,9 @@ class GapStrategyBacktester:
     # ------------------------------------------------------------------
 
     def backtest_single_symbol(self, symbol):
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"  Backtesting: {symbol}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         # Load data from Fyers
         intra = self._load_data_from_fyers(symbol)
@@ -402,10 +402,10 @@ class GapStrategyBacktester:
         # ----------------------------------------------------------------
         # Back-test loop
         # ----------------------------------------------------------------
-        cash        = self.initial_capital
-        trades      = []
-        portfolio   = []
-        position    = None
+        cash = self.initial_capital
+        trades = []
+        portfolio = []
+        position = None
 
         for tdate in trading_dates:
             ts_date = pd.Timestamp(tdate)
@@ -413,8 +413,8 @@ class GapStrategyBacktester:
             # Daily row for this date
             if ts_date not in daily.index:
                 continue
-            day_row    = daily.loc[ts_date]
-            day_open   = day_row['open']
+            day_row = daily.loc[ts_date]
+            day_open = day_row['open']
             prev_close = day_row['prev_close']
 
             if prev_close == 0 or np.isnan(prev_close) or np.isnan(day_open):
@@ -448,12 +448,12 @@ class GapStrategyBacktester:
 
             # ---- Entry ----
             trades_today = 0
-            position     = None   # None | dict
+            position = None  # None | dict
             entry_candle_count = 0
 
             for idx, row in day_candles.iterrows():
                 candle_time = idx.time()
-                is_sqoff    = candle_time >= self.square_off_time
+                is_sqoff = candle_time >= self.square_off_time
 
                 # ---- Mandatory square-off ----
                 if position is not None and is_sqoff:
@@ -534,41 +534,41 @@ class GapStrategyBacktester:
                     entry_price = row['close']
 
                     if direction == 'LONG':
-                        initial_stop  = entry_price - self.initial_stop_atr_mult  * atr_val
+                        initial_stop = entry_price - self.initial_stop_atr_mult * atr_val
                         trailing_stop = entry_price - self.trailing_stop_atr_mult * atr_val
-                        target        = entry_price + self.target_atr_mult * atr_val
+                        target = entry_price + self.target_atr_mult * atr_val
                     else:  # SHORT
-                        initial_stop  = entry_price + self.initial_stop_atr_mult  * atr_val
+                        initial_stop = entry_price + self.initial_stop_atr_mult * atr_val
                         trailing_stop = entry_price + self.trailing_stop_atr_mult * atr_val
-                        target        = entry_price - self.target_atr_mult * atr_val
+                        target = entry_price - self.target_atr_mult * atr_val
 
                     shares = max(1, int(self.initial_capital / entry_price))
-                    cost   = shares * entry_price
-                    cash  -= cost
+                    cost = shares * entry_price
+                    cash -= cost
 
                     position = {
-                        'symbol'          : symbol,
-                        'date'            : tdate,
-                        'direction'       : direction,
-                        'entry_time'      : idx,
-                        'entry_price'     : entry_price,
-                        'shares'          : shares,
-                        'cash_committed'  : cost,
-                        'initial_stop'    : initial_stop,
-                        'trailing_stop'   : trailing_stop,
-                        'target'          : target,
-                        'gap_type'        : gap_type,
-                        'gap_pct'         : gap_pct,
-                        'gap_stats'       : stats,
+                        'symbol': symbol,
+                        'date': tdate,
+                        'direction': direction,
+                        'entry_time': idx,
+                        'entry_price': entry_price,
+                        'shares': shares,
+                        'cash_committed': cost,
+                        'initial_stop': initial_stop,
+                        'trailing_stop': trailing_stop,
+                        'target': target,
+                        'gap_type': gap_type,
+                        'gap_pct': gap_pct,
+                        'gap_stats': stats,
                     }
                     trades_today += 1
 
                     print(
                         f"  {idx.strftime('%Y-%m-%d %H:%M')} | {direction:5s} {shares:4d} @ "
-                        f"₹{entry_price:.2f} | Gap {gap_type} {gap_pct*100:+.2f}% | "
+                        f"₹{entry_price:.2f} | Gap {gap_type} {gap_pct * 100:+.2f}% | "
                         f"Stop ₹{initial_stop:.2f} | Target ₹{target:.2f} | "
-                        f"Hist: cont={stats.get(f'gap_{gap_type.lower()}_continuation_rate', 0)*100:.0f}% "
-                        f"rev={stats.get(f'gap_{gap_type.lower()}_reversal_rate', 0)*100:.0f}%"
+                        f"Hist: cont={stats.get(f'gap_{gap_type.lower()}_continuation_rate', 0) * 100:.0f}% "
+                        f"rev={stats.get(f'gap_{gap_type.lower()}_reversal_rate', 0) * 100:.0f}%"
                     )
 
                 portfolio.append({'date': idx, 'value': cash})
@@ -605,28 +605,28 @@ class GapStrategyBacktester:
             f"P&L: {pnl_sign}₹{pnl:,.2f}"
         )
         return {
-            'symbol'          : position['symbol'],
-            'trade_date'      : str(position['date']),
-            'direction'       : position['direction'],
-            'gap_type'        : position['gap_type'],
-            'gap_pct'         : round(position['gap_pct'] * 100, 3),
-            'entry_time'      : position['entry_time'].strftime('%Y-%m-%d %H:%M:%S'),
-            'exit_time'       : exit_time.strftime('%Y-%m-%d %H:%M:%S'),
-            'entry_price'     : round(position['entry_price'], 2),
-            'exit_price'      : round(exit_price, 2),
-            'shares'          : position['shares'],
-            'pnl'             : round(pnl, 2),
-            'return_pct'      : round(pnl / position['cash_committed'] * 100, 3),
-            'exit_reason'     : reason,
-            'cash_after'      : round(cash_after, 2),
-            'hist_cont_rate'  : round(
+            'symbol': position['symbol'],
+            'trade_date': str(position['date']),
+            'direction': position['direction'],
+            'gap_type': position['gap_type'],
+            'gap_pct': round(position['gap_pct'] * 100, 3),
+            'entry_time': position['entry_time'].strftime('%Y-%m-%d %H:%M:%S'),
+            'exit_time': exit_time.strftime('%Y-%m-%d %H:%M:%S'),
+            'entry_price': round(position['entry_price'], 2),
+            'exit_price': round(exit_price, 2),
+            'shares': position['shares'],
+            'pnl': round(pnl, 2),
+            'return_pct': round(pnl / position['cash_committed'] * 100, 3),
+            'exit_reason': reason,
+            'cash_after': round(cash_after, 2),
+            'hist_cont_rate': round(
                 position['gap_stats'].get(
                     f"gap_{position['gap_type'].lower()}_continuation_rate", 0) * 100, 1),
-            'hist_rev_rate'   : round(
+            'hist_rev_rate': round(
                 position['gap_stats'].get(
                     f"gap_{position['gap_type'].lower()}_reversal_rate", 0) * 100, 1),
-            'hist_gap_count'  : position['gap_stats'].get(
-                    f"gap_{position['gap_type'].lower()}_count", 0),
+            'hist_gap_count': position['gap_stats'].get(
+                f"gap_{position['gap_type'].lower()}_count", 0),
         }
 
     def _compute_summary(self, symbol, trades, final_cash):
@@ -636,45 +636,45 @@ class GapStrategyBacktester:
                 'net_pnl': 0, 'final_capital': final_cash,
             }
 
-        pnl_list  = [t['pnl'] for t in trades]
-        wins      = [p for p in pnl_list if p > 0]
-        losses    = [p for p in pnl_list if p < 0]
-        net_pnl   = sum(pnl_list)
-        win_rate  = len(wins) / len(trades) * 100
-        avg_win   = np.mean(wins) if wins else 0
-        avg_loss  = np.mean(losses) if losses else 0
-        pf        = abs(sum(wins) / sum(losses)) if losses else float('inf')
+        pnl_list = [t['pnl'] for t in trades]
+        wins = [p for p in pnl_list if p > 0]
+        losses = [p for p in pnl_list if p < 0]
+        net_pnl = sum(pnl_list)
+        win_rate = len(wins) / len(trades) * 100
+        avg_win = np.mean(wins) if wins else 0
+        avg_loss = np.mean(losses) if losses else 0
+        pf = abs(sum(wins) / sum(losses)) if losses else float('inf')
 
         exit_counts = {}
         for t in trades:
             r = t['exit_reason']
             exit_counts[r] = exit_counts.get(r, 0) + 1
 
-        long_trades  = [t for t in trades if t['direction'] == 'LONG']
+        long_trades = [t for t in trades if t['direction'] == 'LONG']
         short_trades = [t for t in trades if t['direction'] == 'SHORT']
         gapup_trades = [t for t in trades if t['gap_type'] == 'UP']
         gapdn_trades = [t for t in trades if t['gap_type'] == 'DOWN']
 
         return {
-            'symbol'           : symbol,
-            'total_trades'     : len(trades),
-            'wins'             : len(wins),
-            'losses'           : len(losses),
-            'win_rate'         : round(win_rate, 2),
-            'net_pnl'          : round(net_pnl, 2),
-            'avg_win'          : round(avg_win, 2),
-            'avg_loss'         : round(avg_loss, 2),
-            'profit_factor'    : round(pf, 2),
-            'best_trade'       : round(max(pnl_list), 2),
-            'worst_trade'      : round(min(pnl_list), 2),
-            'final_capital'    : round(final_cash, 2),
-            'return_pct'       : round((final_cash - self.initial_capital) / self.initial_capital * 100, 2),
-            'long_trades'      : len(long_trades),
-            'short_trades'     : len(short_trades),
-            'gap_up_trades'    : len(gapup_trades),
-            'gap_down_trades'  : len(gapdn_trades),
-            'exit_breakdown'   : exit_counts,
-            'trade_log'        : trades,
+            'symbol': symbol,
+            'total_trades': len(trades),
+            'wins': len(wins),
+            'losses': len(losses),
+            'win_rate': round(win_rate, 2),
+            'net_pnl': round(net_pnl, 2),
+            'avg_win': round(avg_win, 2),
+            'avg_loss': round(avg_loss, 2),
+            'profit_factor': round(pf, 2),
+            'best_trade': round(max(pnl_list), 2),
+            'worst_trade': round(min(pnl_list), 2),
+            'final_capital': round(final_cash, 2),
+            'return_pct': round((final_cash - self.initial_capital) / self.initial_capital * 100, 2),
+            'long_trades': len(long_trades),
+            'short_trades': len(short_trades),
+            'gap_up_trades': len(gapup_trades),
+            'gap_down_trades': len(gapdn_trades),
+            'exit_breakdown': exit_counts,
+            'trade_log': trades,
         }
 
     # ------------------------------------------------------------------
@@ -723,7 +723,7 @@ class GapStrategyBacktester:
         )
         print("  " + "-" * 86)
 
-        total_pnl    = 0
+        total_pnl = 0
         total_trades = 0
 
         for sym, r in sorted(self.results.items()):
@@ -740,7 +740,7 @@ class GapStrategyBacktester:
                 f"₹{r['avg_loss']:>8,.0f} "
                 f"{r['return_pct']:>7.2f}%"
             )
-            total_pnl    += r['net_pnl']
+            total_pnl += r['net_pnl']
             total_trades += r['total_trades']
 
         print("  " + "-" * 86)
@@ -842,7 +842,7 @@ if __name__ == "__main__":
         "NSE:AEQUS-EQ",
         "NSE:CORONA-EQ",
 
-        # Favourite Stocks
+        Favourite Stocks
         "NSE:STLTECH-EQ",
         "NSE:SKYGOLD-EQ",
         "NSE:AXISCADES-EQ",
@@ -860,7 +860,78 @@ if __name__ == "__main__":
         # "NSE:MIDCPNIFTY26FEB14000CE",
         # "NSE:MIDCPNIFTY26FEB14000PE",
         # "NSE:BANKNIFTY26FEB60000CE",
-        # "NSE:BANKNIFTY26FEB60000PE"
+        # "NSE:BANKNIFTY26FEB60000PE",
+
+        "NSE:ONGC-EQ",
+        "NSE:OIL-EQ",
+        "NSE:GAIL-EQ",
+
+        # Renewables — Structural Beneficiaries
+        "NSE:ADANIGREEN-EQ",
+        "NSE:TATAPOWER-EQ",
+        "NSE:CESC-EQ",
+
+        # City Gas / LNG Distribution
+        "NSE:IGL-EQ",
+        "NSE:MGL-EQ",
+        "NSE:GUJGASLTD-EQ",
+        "NSE:PETRONET-EQ",
+
+        # Defence
+        "NSE:HAL-EQ",
+        "NSE:BEL-EQ",
+        "NSE:MAZDOCK-EQ",
+        "NSE:DATAPATTNS-EQ",
+
+        # Sugar - Ethanol
+        "NSE:EIDPARRY-EQ",
+        "NSE:BALRAMCHIN-EQ",
+        "NSE:TRIVENI-EQ",
+
+        # Pharmaceuticals
+        "NSE:SUNPHARMA-EQ",
+        "NSE:DIVISLAB-EQ",
+        "NSE:CIPLA-EQ",
+
+        # Petroluem (Oil Marketing Companies)
+        "NSE:IOC-EQ",
+        "NSE:BPCL-EQ",
+        "NSE:HINDPETRO-EQ",
+
+        # Airlines
+        "NSE:INDIGO-EQ",
+
+        # Paints
+        "NSE:ASIANPAINT-EQ",
+        "NSE:BERGEPAINT-EQ",
+        "NSE:KANSAINER-EQ",
+        "NSE:INDIGOPNTS-EQ",
+
+        # Tyres
+        "NSE:CEATLTD-EQ",
+        "NSE:MRF-EQ",
+        "NSE:APOLLOTYRE-EQ",
+        "NSE:JKTYRE-EQ",
+        "NSE:BALKRISIND-EQ",
+
+        # Autos(Nifty Auto)
+        "NSE:MARUTI-EQ",
+        "NSE:M&M-EQ",
+        "NSE:BAJAJ-AUTO-EQ",
+        "NSE:EICHERMOT-EQ",
+        "NSE:TVSMOTOR-EQ",
+
+        # IPO Stocks
+        "NSE:VIKRAMSOLR-EQ",
+        "NSE:ATLANTAELE-EQ",
+        "NSE:SOLARWORLD-EQ",
+        "NSE:RUBICON-EQ",
+        "NSE:MIDWESTLTD-EQ",
+
+        # Favourite Stocks
+        "NSE:STLTECH-EQ",
+        "NSE:SKYGOLD-EQ",
+        "NSE:AXISCADES-EQ",
     ]
 
     backtester = GapStrategyBacktester(
@@ -869,19 +940,19 @@ if __name__ == "__main__":
         symbols=SYMBOLS,
 
         # Gap detection
-        gap_threshold_pct=1.0,    # minimum 0.3% gap to qualify
-        max_gap_pct=5.0,          # ignore gaps larger than 5% (news/earnings)
+        gap_threshold_pct=1.0,  # minimum 0.3% gap to qualify
+        max_gap_pct=5.0,  # ignore gaps larger than 5% (news/earnings)
 
         # Historical behaviour analysis
-        behavior_lookback_days=30,
-        min_gap_history=5,         # need at least 5 prior gap events to decide
+        behavior_lookback_days=90,
+        min_gap_history=5,  # need at least 5 prior gap events to decide
         continuation_threshold=0.55,
         reversal_threshold=0.55,
 
         # Entry
-        entry_candles=12,           # enter within first 3 × 5-min candles after open
+        entry_candles=12,  # enter within first 3 × 5-min candles after open
         candle_interval="5S",
-        last_entry_time="09:45",   # no new entries after 9:45 AM
+        last_entry_time="09:45",  # no new entries after 9:45 AM
 
         # Risk
         atr_period=14,
