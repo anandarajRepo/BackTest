@@ -1099,6 +1099,76 @@ class GapStrategyBacktester:
         return filtered
 
     # ------------------------------------------------------------------
+    # Daily trade count
+    # ------------------------------------------------------------------
+
+    def print_daily_trade_count(self):
+        """Print a table showing total trades taken each day across all symbols."""
+        if not self.results:
+            print("\nNo backtest results for daily trade count.")
+            return
+
+        # Collect all trades from every symbol
+        all_trades = []
+        for r in self.results.values():
+            all_trades.extend(r.get('trade_log', []))
+
+        if not all_trades:
+            print("\nNo trades recorded — daily trade count table is empty.")
+            return
+
+        # Group by trade_date
+        daily: dict = {}
+        for t in all_trades:
+            date_key = str(t['trade_date'])[:10]   # "YYYY-MM-DD"
+            daily.setdefault(date_key, []).append(t['pnl'])
+
+        COL = 80
+        print("\n")
+        print("=" * COL)
+        print("               GAP STRATEGY — DAILY TRADE COUNT")
+        print("=" * COL)
+        print(
+            f"  {'Date':<12} {'Trades':>6} {'Wins':>5} {'Losses':>7} "
+            f"{'WinRate':>8} {'Net P&L':>12}"
+        )
+        print("  " + "-" * (COL - 2))
+
+        grand_trades = 0
+        grand_wins   = 0
+        grand_losses = 0
+        grand_pnl    = 0.0
+
+        for date in sorted(daily.keys()):
+            pnl_list = daily[date]
+            wins   = [p for p in pnl_list if p > 0]
+            losses = [p for p in pnl_list if p < 0]
+            total  = len(pnl_list)
+            net_pnl  = sum(pnl_list)
+            win_rate = len(wins) / total * 100 if total else 0.0
+
+            pnl_str = f"+₹{net_pnl:>9,.0f}" if net_pnl >= 0 else f" ₹{net_pnl:>9,.0f}"
+            print(
+                f"  {date:<12} {total:>6} {len(wins):>5} {len(losses):>7} "
+                f"{win_rate:>7.1f}% {pnl_str}"
+            )
+
+            grand_trades += total
+            grand_wins   += len(wins)
+            grand_losses += len(losses)
+            grand_pnl    += net_pnl
+
+        grand_win_rate = grand_wins / grand_trades * 100 if grand_trades else 0.0
+        grand_pnl_str  = f"+₹{grand_pnl:>9,.0f}" if grand_pnl >= 0 else f" ₹{grand_pnl:>9,.0f}"
+
+        print("  " + "-" * (COL - 2))
+        print(
+            f"  {'TOTAL':<12} {grand_trades:>6} {grand_wins:>5} {grand_losses:>7} "
+            f"{grand_win_rate:>7.1f}% {grand_pnl_str}"
+        )
+        print("=" * COL)
+
+    # ------------------------------------------------------------------
     # Run all symbols
     # ------------------------------------------------------------------
 
@@ -1124,6 +1194,7 @@ class GapStrategyBacktester:
         self.print_trades_table()
         self.print_summary()
         self.print_monthly_summary()
+        self.print_daily_trade_count()
         self.print_filter_report()
         self._save_results()
         return self.results
