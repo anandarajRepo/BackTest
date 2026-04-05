@@ -100,6 +100,7 @@ class GapStrategyBacktester:
             max_loss_rate=60.0,
             # Selling pressure override
             selling_pressure_threshold=0.6,
+            use_selling_pressure=True,
     ):
         # Initialize Fyers client
         self.fyers = fyersModel.FyersModel(client_id=fyers_client_id, token=fyers_access_token, is_async=False, log_path="")
@@ -157,8 +158,9 @@ class GapStrategyBacktester:
         self.min_trades_required = min_trades_required
         self.max_loss_rate = max_loss_rate
 
-        # Selling pressure threshold
+        # Selling pressure threshold and toggle
         self.selling_pressure_threshold = selling_pressure_threshold
+        self.use_selling_pressure = use_selling_pressure
 
         print("=" * 70)
         print("     GAP UP / GAP DOWN STRATEGY BACKTESTER")
@@ -190,7 +192,9 @@ class GapStrategyBacktester:
         print(f"  Stock filter — min profit factor: {min_profit_factor}")
         print(f"  Stock filter — min trades req.  : {min_trades_required}")
         print(f"  Stock filter — max loss rate    : {max_loss_rate}%")
-        print(f"  Selling pressure threshold      : {selling_pressure_threshold:.0%}  (>= forces SHORT)")
+        print(f"  Selling pressure check          : {'ON' if use_selling_pressure else 'OFF'}")
+        if use_selling_pressure:
+            print(f"  Selling pressure threshold      : {selling_pressure_threshold:.0%}  (>= forces SHORT)")
         print()
 
         if symbols is None:
@@ -572,7 +576,7 @@ class GapStrategyBacktester:
             opening_candles = day_candles.head(self.entry_candles)
             selling_pressure = self._calc_selling_pressure(opening_candles)
             original_direction = direction
-            if selling_pressure >= self.selling_pressure_threshold:
+            if self.use_selling_pressure and selling_pressure >= self.selling_pressure_threshold:
                 direction = 'SHORT'
                 if original_direction != 'SHORT':
                     print(
