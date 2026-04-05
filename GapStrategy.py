@@ -643,13 +643,6 @@ class GapStrategyBacktester:
                     }
                     trades_today += 1
 
-                    print(
-                        f"  {idx.strftime('%Y-%m-%d %H:%M')} | {direction:5s} {shares:4d} @ "
-                        f"₹{entry_price:.2f} | Gap {gap_subtype} {gap_pct * 100:+.2f}% | "
-                        f"Stop ₹{initial_stop:.2f} | Target ₹{target:.2f} | "
-                        f"Hist: cont={stats.get(f'gap_{gap_type.lower()}_continuation_rate', 0) * 100:.0f}% "
-                        f"rev={stats.get(f'gap_{gap_type.lower()}_reversal_rate', 0) * 100:.0f}%"
-                    )
 
                 portfolio.append({'date': idx, 'value': cash})
 
@@ -677,13 +670,6 @@ class GapStrategyBacktester:
             return position['shares'] * (position['entry_price'] - exit_price)
 
     def _make_trade_record(self, position, exit_price, exit_time, reason, pnl, cash_after):
-        pnl_sign = "+" if pnl >= 0 else ""
-        print(
-            f"           └─ Exit [{reason}] "
-            f"Entry: {position['entry_time'].strftime('%Y-%m-%d %H:%M')} @ ₹{position['entry_price']:.2f} | "
-            f"Exit: {exit_time.strftime('%Y-%m-%d %H:%M')} @ ₹{exit_price:.2f} | "
-            f"P&L: {pnl_sign}₹{pnl:,.2f}"
-        )
         return {
             'symbol': position['symbol'],
             'trade_date': str(position['date']),
@@ -814,6 +800,74 @@ class GapStrategyBacktester:
                 'worst_trade':   round(min(pnl_list), 2),
             })
         return rows
+
+    def print_trades_table(self):
+        """Print a clean per-symbol trades table with one row per trade."""
+        if not self.results:
+            return
+
+        COL = 115
+        print("\n")
+        print("=" * COL)
+        print("                         GAP STRATEGY — TRADES BY SYMBOL")
+        print("=" * COL)
+
+        HDR = (
+            f"  {'Date':<12} {'Entry':>6} {'Exit':>6}  {'Dir':<6} {'Qty':>5}  "
+            f"{'Entry ₹':>9}  {'Exit ₹':>9}  {'Gap Type':<14} {'Gap%':>6}  "
+            f"{'Hist Cont':>9} {'Hist Rev':>8}  {'Exit Reason':<14}  {'P&L ₹':>11}"
+        )
+        SEP = "  " + "-" * (COL - 2)
+
+        for sym in sorted(self.results.keys()):
+            r = self.results[sym]
+            trades = r.get('trade_log', [])
+
+            print(f"\n  {'─' * (COL - 2)}")
+            if not trades:
+                print(f"  Symbol: {sym}  —  No trades")
+                continue
+
+            total_pnl = sum(t['pnl'] for t in trades)
+            wins = sum(1 for t in trades if t['pnl'] > 0)
+            win_rate = wins / len(trades) * 100
+
+            pnl_label = f"+₹{total_pnl:,.2f}" if total_pnl >= 0 else f"₹{total_pnl:,.2f}"
+            print(
+                f"  Symbol : {sym}   |   {len(trades)} trade(s)   |   "
+                f"Net P&L: {pnl_label}   |   "
+                f"Win Rate: {wins}/{len(trades)} ({win_rate:.1f}%)"
+            )
+            print(SEP)
+            print(HDR)
+            print(SEP)
+
+            for t in trades:
+                pnl = t['pnl']
+                entry_dt = t['entry_time']   # "YYYY-MM-DD HH:MM:SS"
+                exit_dt  = t['exit_time']
+                entry_date = entry_dt[:10]
+                entry_time = entry_dt[11:16]
+                exit_time  = exit_dt[11:16]
+                pnl_str = f"+₹{pnl:>10,.2f}" if pnl >= 0 else f" ₹{pnl:>10,.2f}"
+                print(
+                    f"  {entry_date:<12} {entry_time:>6} {exit_time:>6}  "
+                    f"{t['direction']:<6} {t['shares']:>5}  "
+                    f"₹{t['entry_price']:>8.2f}  ₹{t['exit_price']:>8.2f}  "
+                    f"{t['gap_subtype']:<14} {t['gap_pct']:>+6.2f}%  "
+                    f"{t['hist_cont_rate']:>8.0f}% {t['hist_rev_rate']:>7.0f}%  "
+                    f"{t['exit_reason']:<14}  {pnl_str}"
+                )
+
+            print(SEP)
+            print(
+                f"  {'':12} {'':6} {'':6}  {'':6} {'':5}  {'':9}  {'':9}  "
+                f"{'':14} {'':6}  {'':9} {'':8}  "
+                f"{'TOTAL':<14}  "
+                f"{('+₹' if total_pnl >= 0 else ' ₹')}{total_pnl:>10,.2f}"
+            )
+
+        print("\n" + "=" * COL)
 
     def print_monthly_summary(self):
         """Print a month-wise breakdown table for every symbol that has trades."""
@@ -1067,6 +1121,7 @@ class GapStrategyBacktester:
                 except Exception as e:
                     print(f"  ERROR backtesting {sym}: {e}")
 
+        self.print_trades_table()
         self.print_summary()
         self.print_monthly_summary()
         self.print_filter_report()
