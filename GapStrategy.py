@@ -98,6 +98,8 @@ class GapStrategyBacktester:
             min_profit_factor=1.0,
             min_trades_required=3,
             max_loss_rate=60.0,
+            # Selling pressure override
+            selling_pressure_threshold=0.6,
     ):
         # Initialize Fyers client
         self.fyers = fyersModel.FyersModel(client_id=fyers_client_id, token=fyers_access_token, is_async=False, log_path="")
@@ -155,6 +157,9 @@ class GapStrategyBacktester:
         self.min_trades_required = min_trades_required
         self.max_loss_rate = max_loss_rate
 
+        # Selling pressure threshold
+        self.selling_pressure_threshold = selling_pressure_threshold
+
         print("=" * 70)
         print("     GAP UP / GAP DOWN STRATEGY BACKTESTER")
         print("=" * 70)
@@ -185,6 +190,7 @@ class GapStrategyBacktester:
         print(f"  Stock filter — min profit factor: {min_profit_factor}")
         print(f"  Stock filter — min trades req.  : {min_trades_required}")
         print(f"  Stock filter — max loss rate    : {max_loss_rate}%")
+        print(f"  Selling pressure threshold      : {selling_pressure_threshold:.0%}  (>= forces SHORT)")
         print()
 
         if symbols is None:
@@ -277,6 +283,40 @@ class GapStrategyBacktester:
             (low - prev_close).abs()
         ], axis=1).max(axis=1)
         return tr.rolling(self.atr_period, min_periods=1).mean()
+
+    # ------------------------------------------------------------------
+    # Selling pressure
+    # ------------------------------------------------------------------
+
+    def _calc_selling_pressure(self, candles):
+        """
+        Calculate a volume-weighted selling pressure index from a set of candles.
+
+        For each candle the raw selling pressure is:
+            SP_candle = (High - Close) / (High - Low)
+
+        This equals 0.0 when price closes at the high (pure buying) and 1.0 when
+        price closes at the low (pure selling).  The per-candle value is weighted
+        by volume so that high-volume bars carry more influence.
+
+        Returns
+        -------
+        float in [0.0, 1.0].
+            >= selling_pressure_threshold → dominant selling pressure → force SHORT.
+        """
+        sp_num = 0.0
+        sp_den = 0.0
+        for _, row in candles.iterrows():
+            h, lo, c, v = row['high'], row['low'], row['close'], row['volume']
+            hl_range = h - lo
+            if hl_range > 0:
+                candle_sp = (h - c) / hl_range
+            else:
+                # Doji / flat candle — classify by open vs close
+                candle_sp = 1.0 if c <= row['open'] else 0.0
+            sp_num += candle_sp * v
+            sp_den += v
+        return sp_num / sp_den if sp_den > 0 else 0.5
 
     # ------------------------------------------------------------------
     # PHASE 1 — Historical gap behaviour analysis
@@ -525,6 +565,22 @@ class GapStrategyBacktester:
             if np.isnan(atr_val) or atr_val == 0:
                 continue
 
+            # ---- Selling pressure check ----
+            # Compute volume-weighted selling pressure from the opening entry candles.
+            # If SP >= threshold the market is absorbing the gap-up with heavy selling,
+            # so we override the direction to SHORT regardless of gap direction.
+            opening_candles = day_candles.head(self.entry_candles)
+            selling_pressure = self._calc_selling_pressure(opening_candles)
+            original_direction = direction
+            if selling_pressure >= self.selling_pressure_threshold:
+                direction = 'SHORT'
+                if original_direction != 'SHORT':
+                    print(
+                        f"    [{tdate}] Selling pressure {selling_pressure:.2f} "
+                        f">= {self.selling_pressure_threshold:.2f} → "
+                        f"overriding {original_direction} → SHORT"
+                    )
+
             # ---- Entry ----
             trades_today = 0
             position = None  # None | dict
@@ -640,6 +696,8 @@ class GapStrategyBacktester:
                         'gap_subtype': gap_subtype,
                         'gap_pct': gap_pct,
                         'gap_stats': stats,
+                        'selling_pressure': selling_pressure,
+                        'sp_overridden': original_direction != direction,
                     }
                     trades_today += 1
 
@@ -694,6 +752,8 @@ class GapStrategyBacktester:
                     f"gap_{position['gap_type'].lower()}_reversal_rate", 0) * 100, 1),
             'hist_gap_count': position['gap_stats'].get(
                 f"gap_{position['gap_type'].lower()}_count", 0),
+            'selling_pressure': round(position.get('selling_pressure', 0.0), 3),
+            'sp_overridden': position.get('sp_overridden', False),
         }
 
     def _compute_summary(self, symbol, trades, final_cash):
@@ -806,7 +866,7 @@ class GapStrategyBacktester:
         if not self.results:
             return
 
-        COL = 115
+        COL = 130
         print("\n")
         print("=" * COL)
         print("                         GAP STRATEGY — TRADES BY SYMBOL")
@@ -815,7 +875,8 @@ class GapStrategyBacktester:
         HDR = (
             f"  {'Date':<12} {'Entry':>6} {'Exit':>6}  {'Dir':<6} {'Qty':>5}  "
             f"{'Entry ₹':>9}  {'Exit ₹':>9}  {'Gap Type':<14} {'Gap%':>6}  "
-            f"{'Hist Cont':>9} {'Hist Rev':>8}  {'Exit Reason':<14}  {'P&L ₹':>11}"
+            f"{'Hist Cont':>9} {'Hist Rev':>8}  {'SellPres':>9} {'SP↓':>4}  "
+            f"{'Exit Reason':<14}  {'P&L ₹':>11}"
         )
         SEP = "  " + "-" * (COL - 2)
 
@@ -850,19 +911,22 @@ class GapStrategyBacktester:
                 entry_time = entry_dt[11:16]
                 exit_time  = exit_dt[11:16]
                 pnl_str = f"+₹{pnl:>10,.2f}" if pnl >= 0 else f" ₹{pnl:>10,.2f}"
+                sp_val = t.get('selling_pressure', 0.0)
+                sp_flag = "YES" if t.get('sp_overridden', False) else "   "
                 print(
                     f"  {entry_date:<12} {entry_time:>6} {exit_time:>6}  "
                     f"{t['direction']:<6} {t['shares']:>5}  "
                     f"₹{t['entry_price']:>8.2f}  ₹{t['exit_price']:>8.2f}  "
                     f"{t['gap_subtype']:<14} {t['gap_pct']:>+6.2f}%  "
                     f"{t['hist_cont_rate']:>8.0f}% {t['hist_rev_rate']:>7.0f}%  "
+                    f"{sp_val:>8.2f}  {sp_flag:<4}  "
                     f"{t['exit_reason']:<14}  {pnl_str}"
                 )
 
             print(SEP)
             print(
                 f"  {'':12} {'':6} {'':6}  {'':6} {'':5}  {'':9}  {'':9}  "
-                f"{'':14} {'':6}  {'':9} {'':8}  "
+                f"{'':14} {'':6}  {'':9} {'':8}  {'':9} {'':4}  "
                 f"{'TOTAL':<14}  "
                 f"{('+₹' if total_pnl >= 0 else ' ₹')}{total_pnl:>10,.2f}"
             )
