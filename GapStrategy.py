@@ -693,6 +693,128 @@ class GapStrategyBacktester:
         }
 
     # ------------------------------------------------------------------
+    # Monthly breakdown
+    # ------------------------------------------------------------------
+
+    def _compute_monthly_breakdown(self, trades):
+        """
+        Group a list of trade dicts by calendar month (YYYY-MM) and
+        compute per-month statistics.
+
+        Returns
+        -------
+        list of dicts, one per month, sorted chronologically:
+            month, trades, wins, losses, win_rate, net_pnl,
+            avg_win, avg_loss, profit_factor, best_trade, worst_trade
+        """
+        if not trades:
+            return []
+
+        monthly: dict = {}
+        for t in trades:
+            month_key = str(t['trade_date'])[:7]   # "YYYY-MM"
+            monthly.setdefault(month_key, []).append(t['pnl'])
+
+        rows = []
+        for month in sorted(monthly.keys()):
+            pnl_list = monthly[month]
+            wins   = [p for p in pnl_list if p > 0]
+            losses = [p for p in pnl_list if p < 0]
+            net_pnl = sum(pnl_list)
+            total   = len(pnl_list)
+            win_rate = len(wins) / total * 100 if total else 0.0
+            avg_win  = float(np.mean(wins))   if wins   else 0.0
+            avg_loss = float(np.mean(losses)) if losses else 0.0
+            pf = abs(sum(wins) / sum(losses)) if losses else float('inf')
+            rows.append({
+                'month':         month,
+                'trades':        total,
+                'wins':          len(wins),
+                'losses':        len(losses),
+                'win_rate':      round(win_rate, 2),
+                'net_pnl':       round(net_pnl, 2),
+                'avg_win':       round(avg_win, 2),
+                'avg_loss':      round(avg_loss, 2),
+                'profit_factor': round(pf, 2) if pf != float('inf') else None,
+                'best_trade':    round(max(pnl_list), 2),
+                'worst_trade':   round(min(pnl_list), 2),
+            })
+        return rows
+
+    def print_monthly_summary(self):
+        """Print a month-wise breakdown table for every symbol that has trades."""
+        if not self.results:
+            print("\nNo backtest results for monthly summary.")
+            return
+
+        print("\n")
+        print("=" * 100)
+        print("                     GAP STRATEGY — MONTH-WISE BACKTEST RESULTS")
+        print("=" * 100)
+
+        grand_monthly: dict = {}   # month → list of PnLs (across all symbols)
+
+        for sym, r in sorted(self.results.items()):
+            trades = r.get('trade_log', [])
+            if not trades:
+                continue
+
+            monthly_rows = self._compute_monthly_breakdown(trades)
+            if not monthly_rows:
+                continue
+
+            print(f"\n  Symbol: {sym}")
+            print(
+                f"  {'Month':<10} {'Trades':>6} {'Wins':>5} {'Loss':>5} "
+                f"{'WinRate':>8} {'NetPnL':>10} {'AvgWin':>9} {'AvgLoss':>9} "
+                f"{'PF':>6} {'Best':>9} {'Worst':>9}"
+            )
+            print("  " + "-" * 93)
+            for row in monthly_rows:
+                pf_str = f"{row['profit_factor']:.2f}" if row['profit_factor'] is not None else "  ∞"
+                print(
+                    f"  {row['month']:<10} {row['trades']:>6} {row['wins']:>5} {row['losses']:>5} "
+                    f"{row['win_rate']:>7.1f}% ₹{row['net_pnl']:>9,.0f} "
+                    f"₹{row['avg_win']:>8,.0f} ₹{row['avg_loss']:>8,.0f} "
+                    f"{pf_str:>6} ₹{row['best_trade']:>8,.0f} ₹{row['worst_trade']:>8,.0f}"
+                )
+
+            # Accumulate for grand total
+            for t in trades:
+                mk = str(t['trade_date'])[:7]
+                grand_monthly.setdefault(mk, []).append(t['pnl'])
+
+        # Grand total across all symbols, per month
+        if grand_monthly:
+            print("\n")
+            print("  ALL SYMBOLS COMBINED — Monthly Totals")
+            print(
+                f"  {'Month':<10} {'Trades':>6} {'Wins':>5} {'Loss':>5} "
+                f"{'WinRate':>8} {'NetPnL':>10} {'AvgWin':>9} {'AvgLoss':>9} "
+                f"{'PF':>6} {'Best':>9} {'Worst':>9}"
+            )
+            print("  " + "-" * 93)
+            for month in sorted(grand_monthly.keys()):
+                pnl_list = grand_monthly[month]
+                wins   = [p for p in pnl_list if p > 0]
+                losses = [p for p in pnl_list if p < 0]
+                net_pnl  = sum(pnl_list)
+                total    = len(pnl_list)
+                win_rate = len(wins) / total * 100 if total else 0.0
+                avg_win  = float(np.mean(wins))   if wins   else 0.0
+                avg_loss = float(np.mean(losses)) if losses else 0.0
+                pf       = abs(sum(wins) / sum(losses)) if losses else float('inf')
+                pf_str   = f"{pf:.2f}" if pf != float('inf') else "  ∞"
+                print(
+                    f"  {month:<10} {total:>6} {len(wins):>5} {len(losses):>5} "
+                    f"{win_rate:>7.1f}% ₹{net_pnl:>9,.0f} "
+                    f"₹{avg_win:>8,.0f} ₹{avg_loss:>8,.0f} "
+                    f"{pf_str:>6} ₹{max(pnl_list):>8,.0f} ₹{min(pnl_list):>8,.0f}"
+                )
+
+        print("=" * 100)
+
+    # ------------------------------------------------------------------
     # Stock performance filtering & ranking
     # ------------------------------------------------------------------
 
@@ -872,6 +994,7 @@ class GapStrategyBacktester:
                     print(f"  ERROR backtesting {sym}: {e}")
 
         self.print_summary()
+        self.print_monthly_summary()
         self.print_filter_report()
         self._save_results()
         return self.results
@@ -1000,6 +1123,18 @@ class GapStrategyBacktester:
             filter_path = os.path.join("output", f"gap_strategy_filter_{ts}.csv")
             pd.DataFrame(filter_rows).to_csv(filter_path, index=False)
             print(f"  Filter report    → {filter_path}")
+
+        # Monthly breakdown CSV — one row per (symbol, month)
+        monthly_rows = []
+        for sym, r in self.results.items():
+            trades = r.get('trade_log', [])
+            for row in self._compute_monthly_breakdown(trades):
+                monthly_rows.append({'symbol': sym, **row})
+
+        if monthly_rows:
+            monthly_path = os.path.join("output", f"gap_strategy_monthly_{ts}.csv")
+            pd.DataFrame(monthly_rows).to_csv(monthly_path, index=False)
+            print(f"  Monthly results  → {monthly_path}")
 
 
 # ---------------------------------------------------------------------------
