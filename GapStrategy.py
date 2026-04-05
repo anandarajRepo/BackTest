@@ -67,6 +67,11 @@ class GapStrategyBacktester:
             # Gap detection
             gap_threshold_pct=0.3,
             max_gap_pct=5.0,
+            # Gap calculation mode:
+            #   "full"    — Full Gap only   (open beyond prev high/low)
+            #   "partial" — Partial Gap only (open beyond prev close but within prev range)
+            #   "both"    — Both Full and Partial gaps (default)
+            gap_calculation_mode="both",
             # Historical behaviour analysis
             behavior_lookback_days=30,
             min_gap_history=5,
@@ -113,6 +118,12 @@ class GapStrategyBacktester:
         self.gap_threshold_pct = gap_threshold_pct / 100
         self.max_gap_pct = max_gap_pct / 100
 
+        # Gap calculation mode validation
+        valid_modes = ("full", "partial", "both")
+        if gap_calculation_mode not in valid_modes:
+            raise ValueError(f"gap_calculation_mode must be one of {valid_modes}, got '{gap_calculation_mode}'")
+        self.gap_calculation_mode = gap_calculation_mode
+
         # Behaviour analysis parameters
         self.behavior_lookback_days = behavior_lookback_days
         self.min_gap_history = min_gap_history
@@ -151,6 +162,12 @@ class GapStrategyBacktester:
         print(f"  Backtest period          : last {backtest_days} trading days")
         print(f"  Date range               : {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
         print(f"  Gap threshold            : {gap_threshold_pct}% – {max_gap_pct}%")
+        gap_mode_labels = {
+            "full":    "Full Gap only  (open beyond prev high/low)",
+            "partial": "Partial Gap only (open beyond prev close, within prev range)",
+            "both":    "Both Full & Partial gaps",
+        }
+        print(f"  Gap calculation mode     : {gap_mode_labels[gap_calculation_mode]}")
         print(f"  Behaviour lookback       : {behavior_lookback_days} days")
         print(f"  Min gap history required : {min_gap_history} events")
         print(f"  Continuation threshold   : {continuation_threshold * 100:.0f}%")
@@ -293,17 +310,42 @@ class GapStrategyBacktester:
             return None
 
         historical['prev_close'] = historical['close'].shift(1)
-        historical = historical.dropna(subset=['prev_close'])
+        historical['prev_high'] = historical['high'].shift(1)
+        historical['prev_low'] = historical['low'].shift(1)
+        historical = historical.dropna(subset=['prev_close', 'prev_high', 'prev_low'])
 
         historical['gap_pct'] = (historical['open'] - historical['prev_close']) / historical['prev_close']
 
-        # Classify each row
+        # Classify each row by direction
         historical['gap_type'] = np.where(
             historical['gap_pct'] >= self.gap_threshold_pct, 'UP',
             np.where(historical['gap_pct'] <= -self.gap_threshold_pct, 'DOWN', 'NONE')
         )
         # Exclude extreme gaps
         historical.loc[historical['gap_pct'].abs() > self.max_gap_pct, 'gap_type'] = 'NONE'
+
+        # Classify as Full Gap or Partial Gap
+        #   Full Gap Up   : open > prev_high  (opens entirely above previous range)
+        #   Partial Gap Up: open > prev_close AND open <= prev_high (within prev range)
+        #   Full Gap Down  : open < prev_low   (opens entirely below previous range)
+        #   Partial Gap Down: open < prev_close AND open >= prev_low (within prev range)
+        is_full_up = (historical['gap_type'] == 'UP') & (historical['open'] > historical['prev_high'])
+        is_partial_up = (historical['gap_type'] == 'UP') & (historical['open'] <= historical['prev_high'])
+        is_full_down = (historical['gap_type'] == 'DOWN') & (historical['open'] < historical['prev_low'])
+        is_partial_down = (historical['gap_type'] == 'DOWN') & (historical['open'] >= historical['prev_low'])
+
+        historical['gap_subtype'] = 'NONE'
+        historical.loc[is_full_up, 'gap_subtype'] = 'FULL'
+        historical.loc[is_partial_up, 'gap_subtype'] = 'PARTIAL'
+        historical.loc[is_full_down, 'gap_subtype'] = 'FULL'
+        historical.loc[is_partial_down, 'gap_subtype'] = 'PARTIAL'
+
+        # Apply gap_calculation_mode: suppress gaps that don't match the chosen mode
+        if self.gap_calculation_mode == 'full':
+            historical.loc[historical['gap_subtype'] != 'FULL', 'gap_type'] = 'NONE'
+        elif self.gap_calculation_mode == 'partial':
+            historical.loc[historical['gap_subtype'] != 'PARTIAL', 'gap_type'] = 'NONE'
+        # 'both' → keep all qualifying gaps as-is
 
         # Behaviour: did price close above or below open?
         # continuation for gap-up  → close > open
@@ -403,9 +445,11 @@ class GapStrategyBacktester:
         daily['atr'] = self._calc_atr(daily)
         intra['atr'] = self._calc_atr(intra)
 
-        # Add previous close to daily
+        # Add previous day's OHLC references to daily
         daily['prev_close'] = daily['close'].shift(1)
-        daily = daily.dropna(subset=['prev_close'])
+        daily['prev_high'] = daily['high'].shift(1)
+        daily['prev_low'] = daily['low'].shift(1)
+        daily = daily.dropna(subset=['prev_close', 'prev_high', 'prev_low'])
 
         # All unique trading dates in intraday candles — restrict to last N days
         trading_dates = sorted(set(intra.index.date))
@@ -431,8 +475,12 @@ class GapStrategyBacktester:
             day_row = daily.loc[ts_date]
             day_open = day_row['open']
             prev_close = day_row['prev_close']
+            prev_high = day_row['prev_high']
+            prev_low = day_row['prev_low']
 
-            if prev_close == 0 or np.isnan(prev_close) or np.isnan(day_open):
+            if (prev_close == 0
+                    or np.isnan(prev_close) or np.isnan(day_open)
+                    or np.isnan(prev_high) or np.isnan(prev_low)):
                 continue
 
             # Detect today's gap
@@ -442,6 +490,22 @@ class GapStrategyBacktester:
                 continue  # No qualifying gap today
 
             gap_type = 'UP' if gap_pct > 0 else 'DOWN'
+
+            # Classify as Full Gap or Partial Gap
+            #   Full Gap Up   : open > prev_high  → strong momentum, opens beyond prior range
+            #   Partial Gap Up: prev_close < open <= prev_high → within prior range
+            #   Full Gap Down  : open < prev_low   → opens entirely below prior range
+            #   Partial Gap Down: prev_low <= open < prev_close → within prior range
+            if gap_type == 'UP':
+                gap_subtype = 'FULL_UP' if day_open > prev_high else 'PARTIAL_UP'
+            else:
+                gap_subtype = 'FULL_DOWN' if day_open < prev_low else 'PARTIAL_DOWN'
+
+            # Apply gap_calculation_mode filter
+            if self.gap_calculation_mode == 'full' and gap_subtype not in ('FULL_UP', 'FULL_DOWN'):
+                continue
+            if self.gap_calculation_mode == 'partial' and gap_subtype not in ('PARTIAL_UP', 'PARTIAL_DOWN'):
+                continue
 
             # Phase 1: Historical behaviour analysis
             stats = self._analyze_gap_behavior(daily, tdate)
@@ -573,6 +637,7 @@ class GapStrategyBacktester:
                         'trailing_stop': trailing_stop,
                         'target': target,
                         'gap_type': gap_type,
+                        'gap_subtype': gap_subtype,
                         'gap_pct': gap_pct,
                         'gap_stats': stats,
                     }
@@ -580,7 +645,7 @@ class GapStrategyBacktester:
 
                     print(
                         f"  {idx.strftime('%Y-%m-%d %H:%M')} | {direction:5s} {shares:4d} @ "
-                        f"₹{entry_price:.2f} | Gap {gap_type} {gap_pct * 100:+.2f}% | "
+                        f"₹{entry_price:.2f} | Gap {gap_subtype} {gap_pct * 100:+.2f}% | "
                         f"Stop ₹{initial_stop:.2f} | Target ₹{target:.2f} | "
                         f"Hist: cont={stats.get(f'gap_{gap_type.lower()}_continuation_rate', 0) * 100:.0f}% "
                         f"rev={stats.get(f'gap_{gap_type.lower()}_reversal_rate', 0) * 100:.0f}%"
@@ -624,6 +689,7 @@ class GapStrategyBacktester:
             'trade_date': str(position['date']),
             'direction': position['direction'],
             'gap_type': position['gap_type'],
+            'gap_subtype': position['gap_subtype'],
             'gap_pct': round(position['gap_pct'] * 100, 3),
             'entry_time': position['entry_time'].strftime('%Y-%m-%d %H:%M:%S'),
             'exit_time': exit_time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -669,6 +735,10 @@ class GapStrategyBacktester:
         short_trades = [t for t in trades if t['direction'] == 'SHORT']
         gapup_trades = [t for t in trades if t['gap_type'] == 'UP']
         gapdn_trades = [t for t in trades if t['gap_type'] == 'DOWN']
+        full_gapup_trades = [t for t in trades if t.get('gap_subtype') == 'FULL_UP']
+        full_gapdn_trades = [t for t in trades if t.get('gap_subtype') == 'FULL_DOWN']
+        partial_gapup_trades = [t for t in trades if t.get('gap_subtype') == 'PARTIAL_UP']
+        partial_gapdn_trades = [t for t in trades if t.get('gap_subtype') == 'PARTIAL_DOWN']
 
         return {
             'symbol': symbol,
@@ -688,6 +758,10 @@ class GapStrategyBacktester:
             'short_trades': len(short_trades),
             'gap_up_trades': len(gapup_trades),
             'gap_down_trades': len(gapdn_trades),
+            'full_gap_up_trades': len(full_gapup_trades),
+            'full_gap_down_trades': len(full_gapdn_trades),
+            'partial_gap_up_trades': len(partial_gapup_trades),
+            'partial_gap_down_trades': len(partial_gapdn_trades),
             'exit_breakdown': exit_counts,
             'trade_log': trades,
         }
@@ -1054,14 +1128,28 @@ class GapStrategyBacktester:
 
         # Gap type breakdown
         print("\n  Gap Type Breakdown:")
-        print("  " + "-" * 60)
+        print("  " + "-" * 90)
+        print(f"  {'Symbol':<25}  {'GapUp':>6}  {'GapDn':>6}  "
+              f"{'FullUp':>7}  {'FullDn':>7}  {'PartUp':>7}  {'PartDn':>7}  "
+              f"{'Long':>5}  {'Short':>5}")
+        print("  " + "-" * 90)
         for sym, r in sorted(self.results.items()):
             if r['total_trades'] == 0:
                 continue
             print(
-                f"  {sym:<25}  GapUp:{r['gap_up_trades']}  GapDown:{r['gap_down_trades']}  "
-                f"Long:{r['long_trades']}  Short:{r['short_trades']}"
+                f"  {sym:<25}  {r['gap_up_trades']:>6}  {r['gap_down_trades']:>6}  "
+                f"{r['full_gap_up_trades']:>7}  {r['full_gap_down_trades']:>7}  "
+                f"{r['partial_gap_up_trades']:>7}  {r['partial_gap_down_trades']:>7}  "
+                f"{r['long_trades']:>5}  {r['short_trades']:>5}"
             )
+        print("=" * 90)
+
+        gap_mode_labels = {
+            "full":    "Full Gap only (open beyond prev high/low)",
+            "partial": "Partial Gap only (open beyond prev close, within prev range)",
+            "both":    "Both Full & Partial gaps",
+        }
+        print(f"\n  Gap Calculation Mode: {gap_mode_labels.get(self.gap_calculation_mode, self.gap_calculation_mode)}")
         print("=" * 90)
 
     def _save_results(self):
