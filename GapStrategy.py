@@ -101,6 +101,11 @@ class GapStrategyBacktester:
             # Selling pressure override
             selling_pressure_threshold=0.6,
             use_selling_pressure=True,
+            # Nifty pre-market / gap filter
+            nifty_symbol="NSE:NIFTY50-INDEX",
+            use_nifty_filter=True,
+            nifty_gap_threshold_pct=0.3,
+            nifty_premarket_threshold_pct=0.1,
     ):
         # Initialize Fyers client
         self.fyers = fyersModel.FyersModel(client_id=fyers_client_id, token=fyers_access_token, is_async=False, log_path="")
@@ -162,6 +167,14 @@ class GapStrategyBacktester:
         self.selling_pressure_threshold = selling_pressure_threshold
         self.use_selling_pressure = use_selling_pressure
 
+        # Nifty pre-market / gap filter
+        self.nifty_symbol = nifty_symbol
+        self.use_nifty_filter = use_nifty_filter
+        self.nifty_gap_threshold_pct = nifty_gap_threshold_pct / 100
+        self.nifty_premarket_threshold_pct = nifty_premarket_threshold_pct / 100
+        self._nifty_intra = None
+        self._nifty_daily = None
+
         print("=" * 70)
         print("     GAP UP / GAP DOWN STRATEGY BACKTESTER")
         print("=" * 70)
@@ -195,6 +208,11 @@ class GapStrategyBacktester:
         print(f"  Selling pressure check          : {'ON' if use_selling_pressure else 'OFF'}")
         if use_selling_pressure:
             print(f"  Selling pressure threshold      : {selling_pressure_threshold:.0%}  (>= forces SHORT)")
+        print(f"  Nifty pre-market/gap filter     : {'ON' if use_nifty_filter else 'OFF'}")
+        if use_nifty_filter:
+            print(f"  Nifty symbol                    : {nifty_symbol}")
+            print(f"  Nifty gap threshold             : {nifty_gap_threshold_pct}%")
+            print(f"  Nifty pre-market threshold      : {nifty_premarket_threshold_pct}%")
         print()
 
         if symbols is None:
@@ -321,6 +339,156 @@ class GapStrategyBacktester:
             sp_num += candle_sp * v
             sp_den += v
         return sp_num / sp_den if sp_den > 0 else 0.5
+
+    # ------------------------------------------------------------------
+    # Nifty pre-market / gap filter
+    # ------------------------------------------------------------------
+
+    def _load_nifty_data(self):
+        """
+        Fetch Nifty 50 intraday data (including pre-open 9:00–9:14) and
+        build the daily candle series used for gap calculations.
+
+        Populates self._nifty_intra and self._nifty_daily.
+        Disables self.use_nifty_filter if data cannot be loaded.
+        """
+        print(f"\n  Loading Nifty data ({self.nifty_symbol}) for pre-market filter …")
+        nifty_df = self._load_data_from_fyers(self.nifty_symbol)
+        if nifty_df is None or nifty_df.empty:
+            print(f"  WARNING: Nifty data unavailable — Nifty filter disabled.")
+            self.use_nifty_filter = False
+            return
+
+        # Keep the full 9:00–15:30 window so pre-open candles are retained
+        self._nifty_intra = nifty_df
+
+        # Daily candles use 9:15–15:30 (regular session) for open/close accuracy
+        self._nifty_daily = self._to_daily_candles(nifty_df)
+        self._nifty_daily['prev_close'] = self._nifty_daily['close'].shift(1)
+        print(f"  Nifty daily candles : {len(self._nifty_daily)} days loaded.")
+
+    def _get_nifty_day_info(self, date):
+        """
+        Return Nifty gap opening and pre-market session direction for *date*.
+
+        Gap opening
+        -----------
+        Compares today's regular-session open (9:15 first candle) to the
+        previous day's close, exactly mirroring how stock gaps are computed.
+
+        Pre-market session (9:00–9:14 IST)
+        -----------------------------------
+        Direction is determined by the net price move from the first pre-open
+        candle's open to the last pre-open candle's close.
+
+        Returns
+        -------
+        dict:
+            nifty_gap_pct        — (market open – prev close) / prev close × 100
+            nifty_gap_type       — 'UP', 'DOWN', or 'FLAT'
+            nifty_premarket_dir  — 'BULLISH', 'BEARISH', or 'NEUTRAL'
+            nifty_premarket_chg  — pre-market session % change (open → last close)
+        None if data is unavailable for *date*.
+        """
+        if self._nifty_intra is None or self._nifty_daily is None:
+            return None
+
+        ts_date = pd.Timestamp(date)
+        if ts_date not in self._nifty_daily.index:
+            return None
+
+        nifty_day = self._nifty_daily.loc[ts_date]
+        prev_close = nifty_day.get('prev_close', np.nan)
+        nifty_open = nifty_day['open']
+
+        if pd.isna(prev_close) or prev_close == 0:
+            return None
+
+        # Gap
+        gap_pct = (nifty_open - prev_close) / prev_close * 100
+        if gap_pct >= self.nifty_gap_threshold_pct * 100:
+            gap_type = 'UP'
+        elif gap_pct <= -self.nifty_gap_threshold_pct * 100:
+            gap_type = 'DOWN'
+        else:
+            gap_type = 'FLAT'
+
+        # Pre-market: candles strictly before 9:15 (i.e. 9:00–9:14)
+        day_all = self._nifty_intra[self._nifty_intra.index.date == date]
+        premarket = day_all.between_time('09:00', '09:14')
+
+        if premarket.empty:
+            premarket_dir = 'NEUTRAL'
+            premarket_chg = 0.0
+        else:
+            pm_open = premarket.iloc[0]['open']
+            pm_close = premarket.iloc[-1]['close']
+            if pm_open == 0:
+                premarket_dir = 'NEUTRAL'
+                premarket_chg = 0.0
+            else:
+                premarket_chg = (pm_close - pm_open) / pm_open * 100
+                threshold = self.nifty_premarket_threshold_pct * 100
+                if premarket_chg >= threshold:
+                    premarket_dir = 'BULLISH'
+                elif premarket_chg <= -threshold:
+                    premarket_dir = 'BEARISH'
+                else:
+                    premarket_dir = 'NEUTRAL'
+
+        return {
+            'nifty_gap_pct':       round(gap_pct, 3),
+            'nifty_gap_type':      gap_type,
+            'nifty_premarket_dir': premarket_dir,
+            'nifty_premarket_chg': round(premarket_chg, 3),
+        }
+
+    def _apply_nifty_filter(self, direction, nifty_info):
+        """
+        Validate the proposed trade *direction* against Nifty's pre-market
+        session and gap opening context.
+
+        Decision table
+        --------------
+        LONG intended:
+          • Nifty gap UP   + pre-market BULLISH/NEUTRAL → CONFIRMED
+          • Nifty gap DOWN + pre-market BEARISH          → BLOCKED
+          • All other combinations                       → NEUTRAL
+
+        SHORT intended:
+          • Nifty gap DOWN + pre-market BEARISH/NEUTRAL → CONFIRMED
+          • Nifty gap UP   + pre-market BULLISH          → BLOCKED
+          • All other combinations                       → NEUTRAL
+
+        Returns
+        -------
+        'CONFIRMED' — Nifty context aligns with the intended direction.
+        'BLOCKED'   — Nifty strongly contradicts the intended direction.
+        'NEUTRAL'   — Nifty context is ambiguous; rely on stock-level bias.
+        """
+        if nifty_info is None:
+            return 'NEUTRAL'
+
+        gap = nifty_info['nifty_gap_type']
+        pm  = nifty_info['nifty_premarket_dir']
+
+        if direction == 'LONG':
+            if gap == 'DOWN' and pm == 'BEARISH':
+                return 'BLOCKED'
+            if gap == 'UP' and pm in ('BULLISH', 'NEUTRAL'):
+                return 'CONFIRMED'
+            if gap == 'UP' or pm == 'BULLISH':
+                return 'CONFIRMED'
+
+        elif direction == 'SHORT':
+            if gap == 'UP' and pm == 'BULLISH':
+                return 'BLOCKED'
+            if gap == 'DOWN' and pm in ('BEARISH', 'NEUTRAL'):
+                return 'CONFIRMED'
+            if gap == 'DOWN' or pm == 'BEARISH':
+                return 'CONFIRMED'
+
+        return 'NEUTRAL'
 
     # ------------------------------------------------------------------
     # PHASE 1 — Historical gap behaviour analysis
@@ -559,6 +727,22 @@ class GapStrategyBacktester:
                 # Ambiguous history or insufficient history → skip
                 continue
 
+            # ---- Nifty pre-market / gap filter ----
+            nifty_info = None
+            nifty_verdict = 'NEUTRAL'
+            if self.use_nifty_filter:
+                nifty_info = self._get_nifty_day_info(tdate)
+                nifty_verdict = self._apply_nifty_filter(direction, nifty_info)
+                if nifty_verdict == 'BLOCKED':
+                    print(
+                        f"    [{tdate}] Nifty filter BLOCKED {direction} — "
+                        f"gap={nifty_info['nifty_gap_type']} "
+                        f"({nifty_info['nifty_gap_pct']:+.2f}%)  "
+                        f"pre-mkt={nifty_info['nifty_premarket_dir']} "
+                        f"({nifty_info['nifty_premarket_chg']:+.2f}%)"
+                    )
+                    continue
+
             # Intraday candles for this date
             day_candles = intra[intra.index.date == tdate].copy()
             if day_candles.empty:
@@ -702,6 +886,8 @@ class GapStrategyBacktester:
                         'gap_stats': stats,
                         'selling_pressure': selling_pressure,
                         'sp_overridden': original_direction != direction,
+                        'nifty_info': nifty_info,
+                        'nifty_verdict': nifty_verdict,
                     }
                     trades_today += 1
 
@@ -758,6 +944,11 @@ class GapStrategyBacktester:
                 f"gap_{position['gap_type'].lower()}_count", 0),
             'selling_pressure': round(position.get('selling_pressure', 0.0), 3),
             'sp_overridden': position.get('sp_overridden', False),
+            'nifty_gap_type': position.get('nifty_info', {}).get('nifty_gap_type', 'N/A') if position.get('nifty_info') else 'N/A',
+            'nifty_gap_pct': round(position.get('nifty_info', {}).get('nifty_gap_pct', 0.0), 3) if position.get('nifty_info') else 0.0,
+            'nifty_premarket_dir': position.get('nifty_info', {}).get('nifty_premarket_dir', 'N/A') if position.get('nifty_info') else 'N/A',
+            'nifty_premarket_chg': round(position.get('nifty_info', {}).get('nifty_premarket_chg', 0.0), 3) if position.get('nifty_info') else 0.0,
+            'nifty_verdict': position.get('nifty_verdict', 'NEUTRAL'),
         }
 
     def _compute_summary(self, symbol, trades, final_cash):
@@ -870,7 +1061,7 @@ class GapStrategyBacktester:
         if not self.results:
             return
 
-        COL = 130
+        COL = 165
         print("\n")
         print("=" * COL)
         print("                         GAP STRATEGY — TRADES BY SYMBOL")
@@ -880,6 +1071,7 @@ class GapStrategyBacktester:
             f"  {'Date':<12} {'Entry':>6} {'Exit':>6}  {'Dir':<6} {'Qty':>5}  "
             f"{'Entry ₹':>9}  {'Exit ₹':>9}  {'Gap Type':<14} {'Gap%':>6}  "
             f"{'Hist Cont':>9} {'Hist Rev':>8}  {'SellPres':>9} {'SP↓':>4}  "
+            f"{'N50 Gap':>8} {'N50 PM':>9} {'N50':>10}  "
             f"{'Exit Reason':<14}  {'P&L ₹':>11}"
         )
         SEP = "  " + "-" * (COL - 2)
@@ -917,6 +1109,11 @@ class GapStrategyBacktester:
                 pnl_str = f"+₹{pnl:>10,.2f}" if pnl >= 0 else f" ₹{pnl:>10,.2f}"
                 sp_val = t.get('selling_pressure', 0.0)
                 sp_flag = "YES" if t.get('sp_overridden', False) else "   "
+                n50_gap = t.get('nifty_gap_type', 'N/A')
+                n50_gap_pct = t.get('nifty_gap_pct', 0.0)
+                n50_pm = t.get('nifty_premarket_dir', 'N/A')
+                n50_verdict = t.get('nifty_verdict', 'NEUTRAL')
+                n50_gap_str = f"{n50_gap}({n50_gap_pct:+.2f}%)"
                 print(
                     f"  {entry_date:<12} {entry_time:>6} {exit_time:>6}  "
                     f"{t['direction']:<6} {t['shares']:>5}  "
@@ -924,6 +1121,7 @@ class GapStrategyBacktester:
                     f"{t['gap_subtype']:<14} {t['gap_pct']:>+6.2f}%  "
                     f"{t['hist_cont_rate']:>8.0f}% {t['hist_rev_rate']:>7.0f}%  "
                     f"{sp_val:>8.2f}  {sp_flag:<4}  "
+                    f"{n50_gap_str:>8} {n50_pm:>9} {n50_verdict:>10}  "
                     f"{t['exit_reason']:<14}  {pnl_str}"
                 )
 
@@ -931,6 +1129,7 @@ class GapStrategyBacktester:
             print(
                 f"  {'':12} {'':6} {'':6}  {'':6} {'':5}  {'':9}  {'':9}  "
                 f"{'':14} {'':6}  {'':9} {'':8}  {'':9} {'':4}  "
+                f"{'':8} {'':9} {'':10}  "
                 f"{'TOTAL':<14}  "
                 f"{('+₹' if total_pnl >= 0 else ' ₹')}{total_pnl:>10,.2f}"
             )
@@ -1246,6 +1445,10 @@ class GapStrategyBacktester:
             return {}
 
         print(f"\nRunning backtest for {len(self.symbols)} symbol(s) …\n")
+
+        # Load Nifty 50 data once (shared across all symbol backtests)
+        if self.use_nifty_filter:
+            self._load_nifty_data()
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
