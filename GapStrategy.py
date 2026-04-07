@@ -106,6 +106,10 @@ class GapStrategyBacktester:
             use_nifty_filter=False,
             nifty_gap_threshold_pct=1.0,
             nifty_premarket_threshold_pct=1.0,
+            # Previous day closing condition filter
+            use_prev_day_condition=False,
+            prev_day_close_near_high_pct=0.20,
+            prev_day_volume_lookback=14,
     ):
         # Initialize Fyers client
         self.fyers = fyersModel.FyersModel(client_id=fyers_client_id, token=fyers_access_token, is_async=False, log_path="")
@@ -175,6 +179,13 @@ class GapStrategyBacktester:
         self._nifty_intra = None
         self._nifty_daily = None
 
+        # Previous day closing condition filter
+        # Bullish  → volume surge + close near highs of the 30-min period (→ LONG bias)
+        # Bearish  → high volume but price fails to hold highs / distribution (→ SHORT bias)
+        self.use_prev_day_condition = use_prev_day_condition
+        self.prev_day_close_near_high_pct = prev_day_close_near_high_pct
+        self.prev_day_volume_lookback = prev_day_volume_lookback
+
         print("=" * 70)
         print("     GAP UP / GAP DOWN STRATEGY BACKTESTER")
         print("=" * 70)
@@ -213,6 +224,12 @@ class GapStrategyBacktester:
             print(f"  Nifty symbol                    : {nifty_symbol}")
             print(f"  Nifty gap threshold             : {nifty_gap_threshold_pct}%")
             print(f"  Nifty pre-market threshold      : {nifty_premarket_threshold_pct}%")
+        print(f"  Prev-day closing condition      : {'ON' if use_prev_day_condition else 'OFF'}")
+        if use_prev_day_condition:
+            print(f"  Prev-day close-near-high pct    : top {prev_day_close_near_high_pct * 100:.0f}% of 30-min range")
+            print(f"  Prev-day volume lookback        : {prev_day_volume_lookback} × 30-min candles")
+            print(f"  Bullish signal (→ LONG bias)    : Volume surge + close in top {prev_day_close_near_high_pct * 100:.0f}% of 30-min range")
+            print(f"  Bearish signal (→ SHORT bias)   : High volume + price fails to hold highs (distribution)")
         print()
 
         if symbols is None:
@@ -489,6 +506,109 @@ class GapStrategyBacktester:
                 return 'CONFIRMED'
 
         return 'NEUTRAL'
+
+    # ------------------------------------------------------------------
+    # Previous day closing condition
+    # ------------------------------------------------------------------
+
+    def _calc_prev_day_closing_signal(self, intra_df, tdate):
+        """
+        Analyse the previous trading day's closing 30-minute candle to
+        determine a directional bias for today's trade.
+
+        Algorithm
+        ---------
+        1. Identify the previous trading date from the intraday DataFrame.
+        2. Resample that day's intraday data into 30-minute candles.
+        3. Compute an average 30-min volume using up to
+           `prev_day_volume_lookback` candles (excluding the last one so
+           it is not self-referential).
+        4. Evaluate the LAST complete 30-min candle of the previous day:
+
+           Bullish (→ LONG bias):
+             • Volume of last candle > average volume   (surge condition)
+             • Close is in the TOP `prev_day_close_near_high_pct` fraction
+               of the 30-min range, i.e.
+               (close - low) / (high - low) >= (1 - prev_day_close_near_high_pct)
+               Price absorbed the volume and closed strong near session highs.
+
+           Bearish (→ SHORT bias / distribution):
+             • Volume of last candle > average volume   (high-volume condition)
+             • Close FAILS to hold highs — sits in the BOTTOM fraction, i.e.
+               (close - low) / (high - low) < prev_day_close_near_high_pct
+               Heavy selling absorbed the buying; classic distribution bar.
+
+           Neutral: any other case (volume not elevated, or range too small).
+
+        Returns
+        -------
+        'BULLISH'  — confirms / biases LONG entry.
+        'BEARISH'  — confirms / biases SHORT entry.
+        'NEUTRAL'  — no clear signal; no override applied.
+        """
+        # ---- Locate previous trading date ----
+        all_dates = sorted(set(intra_df.index.date))
+        tdate_idx = None
+        for i, d in enumerate(all_dates):
+            if d == tdate:
+                tdate_idx = i
+                break
+
+        if tdate_idx is None or tdate_idx == 0:
+            return 'NEUTRAL'   # No previous day data available
+
+        prev_date = all_dates[tdate_idx - 1]
+        prev_day_intra = intra_df[intra_df.index.date == prev_date].copy()
+
+        if prev_day_intra.empty:
+            return 'NEUTRAL'
+
+        # ---- Resample to 30-min candles ----
+        agg = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
+        prev_30m = prev_day_intra.resample('30T').agg(agg).dropna(subset=['open', 'close'])
+
+        if len(prev_30m) < 2:
+            return 'NEUTRAL'   # Need at least 2 candles (1 for reference + 1 last)
+
+        # ---- Last 30-min candle of previous day ----
+        last_candle = prev_30m.iloc[-1]
+
+        # ---- Average volume (exclude last candle to avoid self-reference) ----
+        reference_candles = prev_30m.iloc[:-1]
+        if self.prev_day_volume_lookback and len(reference_candles) > self.prev_day_volume_lookback:
+            reference_candles = reference_candles.iloc[-self.prev_day_volume_lookback:]
+
+        avg_volume = reference_candles['volume'].mean()
+        if avg_volume <= 0 or np.isnan(avg_volume):
+            return 'NEUTRAL'
+
+        last_volume = last_candle['volume']
+        is_volume_surge = last_volume > avg_volume
+
+        # ---- Close position within the 30-min range ----
+        h = last_candle['high']
+        lo = last_candle['low']
+        c = last_candle['close']
+        hl_range = h - lo
+
+        if hl_range <= 0:
+            # Doji / flat candle — classify by close vs open
+            close_ratio = 0.5
+        else:
+            close_ratio = (c - lo) / hl_range   # 0.0 = at low, 1.0 = at high
+
+        near_high_threshold = 1.0 - self.prev_day_close_near_high_pct
+        near_low_threshold = self.prev_day_close_near_high_pct
+
+        # ---- Signal determination ----
+        if is_volume_surge and close_ratio >= near_high_threshold:
+            # Volume surge + closed near highs → buyers in control → BULLISH
+            return 'BULLISH'
+        elif is_volume_surge and close_ratio <= near_low_threshold:
+            # High volume but price failed to hold highs → distribution → BEARISH
+            return 'BEARISH'
+        else:
+            return 'NEUTRAL'
 
     # ------------------------------------------------------------------
     # PHASE 1 — Historical gap behaviour analysis
@@ -769,6 +889,30 @@ class GapStrategyBacktester:
                         f"overriding {original_direction} → SHORT"
                     )
 
+            # ---- Previous day closing condition ----
+            # Bullish signal  (volume surge + close near highs)  → bias LONG;  block SHORT.
+            # Bearish signal  (high volume + fails to hold highs) → bias SHORT; block LONG.
+            prev_day_signal = 'NEUTRAL'
+            if self.use_prev_day_condition:
+                prev_day_signal = self._calc_prev_day_closing_signal(intra, tdate)
+                if prev_day_signal == 'BULLISH' and direction == 'SHORT':
+                    print(
+                        f"    [{tdate}] Prev-day condition BULLISH "
+                        f"(vol surge + closed near highs) → BLOCKED SHORT trade"
+                    )
+                    continue
+                elif prev_day_signal == 'BEARISH' and direction == 'LONG':
+                    print(
+                        f"    [{tdate}] Prev-day condition BEARISH "
+                        f"(distribution — high vol, failed to hold highs) → BLOCKED LONG trade"
+                    )
+                    continue
+                elif prev_day_signal != 'NEUTRAL':
+                    print(
+                        f"    [{tdate}] Prev-day condition {prev_day_signal} "
+                        f"→ confirms {direction} direction"
+                    )
+
             # ---- Entry ----
             trades_today = 0
             position = None  # None | dict
@@ -888,6 +1032,7 @@ class GapStrategyBacktester:
                         'sp_overridden': original_direction != direction,
                         'nifty_info': nifty_info,
                         'nifty_verdict': nifty_verdict,
+                        'prev_day_signal': prev_day_signal,
                     }
                     trades_today += 1
 
@@ -949,6 +1094,7 @@ class GapStrategyBacktester:
             'nifty_premarket_dir': position.get('nifty_info', {}).get('nifty_premarket_dir', 'N/A') if position.get('nifty_info') else 'N/A',
             'nifty_premarket_chg': round(position.get('nifty_info', {}).get('nifty_premarket_chg', 0.0), 3) if position.get('nifty_info') else 0.0,
             'nifty_verdict': position.get('nifty_verdict', 'NEUTRAL'),
+            'prev_day_signal': position.get('prev_day_signal', 'NEUTRAL'),
         }
 
     def _compute_summary(self, symbol, trades, final_cash):
@@ -1061,7 +1207,7 @@ class GapStrategyBacktester:
         if not self.results:
             return
 
-        COL = 165
+        COL = 180
         print("\n")
         print("=" * COL)
         print("                         GAP STRATEGY — TRADES BY SYMBOL")
@@ -1072,6 +1218,7 @@ class GapStrategyBacktester:
             f"{'Entry ₹':>9}  {'Exit ₹':>9}  {'Gap Type':<14} {'Gap%':>6}  "
             f"{'Hist Cont':>9} {'Hist Rev':>8}  {'SellPres':>9} {'SP↓':>4}  "
             f"{'N50 Gap':>8} {'N50 PM':>9} {'N50':>10}  "
+            f"{'PrevDay':>8}  "
             f"{'Exit Reason':<14}  {'P&L ₹':>11}"
         )
         SEP = "  " + "-" * (COL - 2)
@@ -1114,6 +1261,9 @@ class GapStrategyBacktester:
                 n50_pm = t.get('nifty_premarket_dir', 'N/A')
                 n50_verdict = t.get('nifty_verdict', 'NEUTRAL')
                 n50_gap_str = f"{n50_gap}({n50_gap_pct:+.2f}%)"
+                prev_day_sig = t.get('prev_day_signal', 'NEUTRAL')
+                # Shorten for display: BULLISH→BUL, BEARISH→BEA, NEUTRAL→NEU
+                prev_day_abbr = {'BULLISH': 'BUL', 'BEARISH': 'BEA', 'NEUTRAL': 'NEU'}.get(prev_day_sig, prev_day_sig)
                 print(
                     f"  {entry_date:<12} {entry_time:>6} {exit_time:>6}  "
                     f"{t['direction']:<6} {t['shares']:>5}  "
@@ -1122,6 +1272,7 @@ class GapStrategyBacktester:
                     f"{t['hist_cont_rate']:>8.0f}% {t['hist_rev_rate']:>7.0f}%  "
                     f"{sp_val:>8.2f}  {sp_flag:<4}  "
                     f"{n50_gap_str:>8} {n50_pm:>9} {n50_verdict:>10}  "
+                    f"{prev_day_abbr:>8}  "
                     f"{t['exit_reason']:<14}  {pnl_str}"
                 )
 
@@ -1130,6 +1281,7 @@ class GapStrategyBacktester:
                 f"  {'':12} {'':6} {'':6}  {'':6} {'':5}  {'':9}  {'':9}  "
                 f"{'':14} {'':6}  {'':9} {'':8}  {'':9} {'':4}  "
                 f"{'':8} {'':9} {'':10}  "
+                f"{'':8}  "
                 f"{'TOTAL':<14}  "
                 f"{('+₹' if total_pnl >= 0 else ' ₹')}{total_pnl:>10,.2f}"
             )
