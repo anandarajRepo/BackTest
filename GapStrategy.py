@@ -100,12 +100,12 @@ class GapStrategyBacktester:
             max_loss_rate=60.0,
             # Selling pressure override
             selling_pressure_threshold=0.6,
-            use_selling_pressure=True,
+            use_selling_pressure=False,
             # Nifty pre-market / gap filter
             nifty_symbol="NSE:NIFTY50-INDEX",
-            use_nifty_filter=True,
-            nifty_gap_threshold_pct=0.3,
-            nifty_premarket_threshold_pct=0.1,
+            use_nifty_filter=False,
+            nifty_gap_threshold_pct=1.0,
+            nifty_premarket_threshold_pct=1.0,
     ):
         # Initialize Fyers client
         self.fyers = fyersModel.FyersModel(client_id=fyers_client_id, token=fyers_access_token, is_async=False, log_path="")
@@ -1668,15 +1668,6 @@ if __name__ == "__main__":
         "NSE:AEQUS-EQ",
         "NSE:CORONA-EQ",
 
-        # Favourite Stocks
-        "NSE:STLTECH-EQ",
-        "NSE:SKYGOLD-EQ",
-        "NSE:AXISCADES-EQ",
-        "BSE:SATTRIX-M"
-
-        "NSE:AWHCL-EQ",
-        "NSE:KAPSTON-EQ",
-
         # "NSE:NIFTY2621025800CE",
         # "NSE:NIFTY2621025800PE",
         # "NSE:NIFTY2621025600CE",
@@ -1770,7 +1761,7 @@ if __name__ == "__main__":
         max_gap_pct=5.0,  # ignore gaps larger than 5% (news/earnings)
 
         # Historical behaviour analysis
-        behavior_lookback_days=90,
+        behavior_lookback_days=30,
         min_gap_history=5,  # need at least 5 prior gap events to decide
         continuation_threshold=0.55,
         reversal_threshold=0.55,
