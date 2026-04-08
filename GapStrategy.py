@@ -1930,8 +1930,8 @@ if __name__ == "__main__":
         # Historical behaviour analysis
         behavior_lookback_days=30,
         min_gap_history=5,  # need at least 5 prior gap events to decide
-        continuation_threshold=0.55,
-        reversal_threshold=0.55,
+        continuation_threshold=0.60,
+        reversal_threshold=0.60,
 
         # Entry
         entry_candles=12,  # enter within first 3 × 5-min candles after open
