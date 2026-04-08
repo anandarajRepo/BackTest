@@ -1897,6 +1897,21 @@ if __name__ == "__main__":
         "NSE:RUBICON-EQ",
         "NSE:MIDWESTLTD-EQ",
 
+        "NSE:TITAN-EQ",
+        "NSE:KALYANKJIL-EQ",
+        "NSE:PCJEWELLER-EQ",
+        "NSE:PNGBL-EQ",
+        "NSE:THANGAMAYL-EQ",
+        "NSE:SENCO-EQ",
+        "NSE:RJIL-EQ",
+        "NSE:SKYGOLD-EQ",
+        "NSE:GOLDIAM-EQ",
+        "NSE:DIVHJL-EQ",  # Divine Hira Jewellers
+        "NSE:ZODIACJL-EQ",  # Zodiac‑JRD‑MKJ (listed jeweller)
+        "NSE:NARBADAG-EQ",  # Narbada Gems & Jewellery
+        "NSE:MOKSH-EQ",  # Moksh Ornaments
+        "NSE:SWARN-EQ"  # Swarnsarita Jewels India
+
         # Favourite Stocks
         "NSE:STLTECH-EQ",
         "NSE:SKYGOLD-EQ",
