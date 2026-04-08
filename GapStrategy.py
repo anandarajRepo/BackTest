@@ -848,20 +848,19 @@ class GapStrategyBacktester:
                 continue
 
             # ---- Nifty pre-market / gap filter ----
-            nifty_info = None
-            nifty_verdict = 'NEUTRAL'
-            if self.use_nifty_filter:
-                nifty_info = self._get_nifty_day_info(tdate)
-                nifty_verdict = self._apply_nifty_filter(direction, nifty_info)
-                if nifty_verdict == 'BLOCKED':
-                    print(
-                        f"    [{tdate}] Nifty filter BLOCKED {direction} — "
-                        f"gap={nifty_info['nifty_gap_type']} "
-                        f"({nifty_info['nifty_gap_pct']:+.2f}%)  "
-                        f"pre-mkt={nifty_info['nifty_premarket_dir']} "
-                        f"({nifty_info['nifty_premarket_chg']:+.2f}%)"
-                    )
-                    continue
+            # Always calculate so values appear in the table.
+            # Only block the trade when use_nifty_filter=True.
+            nifty_info = self._get_nifty_day_info(tdate)
+            nifty_verdict = self._apply_nifty_filter(direction, nifty_info)
+            if self.use_nifty_filter and nifty_verdict == 'BLOCKED':
+                print(
+                    f"    [{tdate}] Nifty filter BLOCKED {direction} — "
+                    f"gap={nifty_info['nifty_gap_type']} "
+                    f"({nifty_info['nifty_gap_pct']:+.2f}%)  "
+                    f"pre-mkt={nifty_info['nifty_premarket_dir']} "
+                    f"({nifty_info['nifty_premarket_chg']:+.2f}%)"
+                )
+                continue
 
             # Intraday candles for this date
             day_candles = intra[intra.index.date == tdate].copy()
@@ -892,9 +891,10 @@ class GapStrategyBacktester:
             # ---- Previous day closing condition ----
             # Bullish signal  (volume surge + close near highs)  → bias LONG;  block SHORT.
             # Bearish signal  (high volume + fails to hold highs) → bias SHORT; block LONG.
-            prev_day_signal = 'NEUTRAL'
+            # Always calculate so values appear in the table.
+            # Only block the trade when use_prev_day_condition=True.
+            prev_day_signal = self._calc_prev_day_closing_signal(intra, tdate)
             if self.use_prev_day_condition:
-                prev_day_signal = self._calc_prev_day_closing_signal(intra, tdate)
                 if prev_day_signal == 'BULLISH' and direction == 'SHORT':
                     print(
                         f"    [{tdate}] Prev-day condition BULLISH "
@@ -1599,8 +1599,8 @@ class GapStrategyBacktester:
         print(f"\nRunning backtest for {len(self.symbols)} symbol(s) …\n")
 
         # Load Nifty 50 data once (shared across all symbol backtests)
-        if self.use_nifty_filter:
-            self._load_nifty_data()
+        # Always load so values appear in the table even when filter is disabled
+        self._load_nifty_data()
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
