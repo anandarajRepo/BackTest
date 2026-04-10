@@ -109,11 +109,10 @@ class ImprovedAdvancedHeikinAshiBacktester:
             if ce_sym and pe_sym:
                 self.symbols = [ce_sym, pe_sym]
             else:
-                print("ATM fetch failed — falling back to auto-detection from databases...")
-                self.symbols = self.auto_detect_symbols()
+                print("ATM fetch failed — no symbols to backtest.")
+                self.symbols = []
         else:
-            print("\nAuto-detecting symbols from databases...")
-            self.symbols = self.auto_detect_symbols()
+            self.symbols = []
 
         print(f"\nSymbols to backtest: {len(self.symbols)}")
 
@@ -131,49 +130,6 @@ class ImprovedAdvancedHeikinAshiBacktester:
             return []
         db_files = glob.glob(os.path.join(self.data_folder, "*.db"))
         return sorted(db_files)
-
-    def auto_detect_symbols(self):
-        """Auto-detect symbols from databases"""
-        all_symbols = set()
-        symbol_stats = {}
-
-        for db_file in self.db_files:
-            try:
-                conn = sqlite3.connect(db_file)
-                query = """
-                SELECT symbol, COUNT(*) as record_count,
-                       MIN(timestamp) as first_record,
-                       MAX(timestamp) as last_record
-                FROM market_data
-                GROUP BY symbol
-                HAVING COUNT(*) >= ?
-                ORDER BY record_count DESC
-                """
-                symbols_df = pd.read_sql_query(query, conn, params=(self.min_data_points,))
-                conn.close()
-
-                for _, row in symbols_df.iterrows():
-                    symbol = row['symbol']
-                    all_symbols.add(symbol)
-
-                    if symbol not in symbol_stats:
-                        symbol_stats[symbol] = {
-                            'total_records': 0,
-                            'databases': []
-                        }
-
-                    symbol_stats[symbol]['total_records'] += row['record_count']
-                    symbol_stats[symbol]['databases'].append(os.path.basename(db_file))
-            except:
-                continue
-
-        # Filter and sort symbols
-        filtered_symbols = [s for s, stats in symbol_stats.items()
-                          if stats['total_records'] >= self.min_data_points]
-
-        return sorted(filtered_symbols,
-                     key=lambda s: symbol_stats[s]['total_records'],
-                     reverse=True)[:20]
 
     # ------------------------------------------------------------------ #
     #  NIFTY ATM CONTRACT SELECTION                                        #
@@ -1120,45 +1076,3 @@ if __name__ == "__main__":
     )
 
     atm_backtester.run_backtest()
-
-    # ------------------------------------------------------------------
-    # CONFIGURATION 2: Conservative — manual symbols / auto-detect from DB
-    # ------------------------------------------------------------------
-    print("\n\n" + "=" * 100)
-    print("RUNNING IMPROVED STRATEGY — CONSERVATIVE CONFIGURATION (DB symbols)")
-    print("=" * 100)
-
-    backtester = ImprovedAdvancedHeikinAshiBacktester(
-        data_folder="data/symbolupdate",
-        symbols=None,
-
-        # Stricter filters
-        ha_smoothing=3,
-        adx_period=14,
-        adx_threshold=30,
-        volume_percentile=75,
-        consecutive_candles=3,
-
-        # Tighter risk management
-        atr_period=14,
-        atr_multiplier=1.5,
-        breakeven_profit_pct=0.5,
-        max_loss_pct=0.75,
-        min_risk_reward=2.0,
-
-        # Time filters
-        avoid_opening_mins=15,
-        avoid_lunch_start="12:30",
-        avoid_lunch_end="13:30",
-        last_entry_time="14:45",
-
-        # Quality filters
-        min_ha_body_pct=0.15,
-        max_trades_per_day=5,
-
-        initial_capital=100000,
-        square_off_time="15:20",
-        tick_interval='30s'
-    )
-
-    backtester.run_backtest()
