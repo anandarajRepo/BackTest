@@ -4,7 +4,7 @@ import numpy as np
 import json
 import glob
 import os
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import pytz
 import warnings
 
@@ -21,7 +21,8 @@ class ImprovedAdvancedHeikinAshiBacktester:
                  max_loss_pct=0.75, min_risk_reward=2.0,
                  avoid_opening_mins=15, avoid_lunch_start="12:30",
                  avoid_lunch_end="13:30", last_entry_time="14:45",
-                 min_ha_body_pct=0.15, max_trades_per_day=5):
+                 min_ha_body_pct=0.15, max_trades_per_day=5,
+                 use_nifty_atm=False, nifty_strike_interval=50):
         """
         IMPROVED Advanced Heikin Ashi Strategy with Better Risk Management
 
@@ -69,6 +70,10 @@ class ImprovedAdvancedHeikinAshiBacktester:
         self.min_ha_body_pct = min_ha_body_pct / 100
         self.max_trades_per_day = max_trades_per_day
 
+        # Nifty ATM contract selection
+        self.use_nifty_atm = use_nifty_atm
+        self.nifty_strike_interval = nifty_strike_interval
+
         self.results = {}
         self.combined_data = {}
 
@@ -93,14 +98,22 @@ class ImprovedAdvancedHeikinAshiBacktester:
         print(f"  Last Entry: {last_entry_time} IST")
         print(f"  Square-off Time: {square_off_time} IST")
         print(f"  Initial Capital: ₹{self.initial_capital:,}")
+        print(f"  Nifty ATM Mode: {'ENABLED (strike interval: {})'.format(nifty_strike_interval) if use_nifty_atm else 'DISABLED'}")
         print(f"{'='*100}")
 
-        # Auto-detect symbols if not provided
-        if symbols is None:
+        # Determine symbols to backtest
+        if symbols is not None:
+            self.symbols = symbols
+        elif self.use_nifty_atm:
+            ce_sym, pe_sym = self.fetch_nifty_atm_contracts()
+            if ce_sym and pe_sym:
+                self.symbols = [ce_sym, pe_sym]
+            else:
+                print("ATM fetch failed — falling back to auto-detection from databases...")
+                self.symbols = self.auto_detect_symbols()
+        else:
             print("\nAuto-detecting symbols from databases...")
             self.symbols = self.auto_detect_symbols()
-        else:
-            self.symbols = symbols
 
         print(f"\nSymbols to backtest: {len(self.symbols)}")
 
@@ -161,6 +174,279 @@ class ImprovedAdvancedHeikinAshiBacktester:
         return sorted(filtered_symbols,
                      key=lambda s: symbol_stats[s]['total_records'],
                      reverse=True)[:20]
+
+    # ------------------------------------------------------------------ #
+    #  NIFTY ATM CONTRACT SELECTION                                        #
+    # ------------------------------------------------------------------ #
+
+    def get_weekly_expiry_date(self, reference_date=None):
+        """
+        Return the nearest upcoming Nifty weekly expiry date (Thursday).
+
+        - If reference_date is a Thursday, that same date is returned
+          (today's expiry).
+        - If reference_date falls on Friday / Saturday / Sunday, the
+          *next* Thursday is returned.
+
+        Parameters
+        ----------
+        reference_date : datetime.date or None
+            Date to compute the expiry from. Defaults to today (IST).
+
+        Returns
+        -------
+        datetime.date
+        """
+        if reference_date is None:
+            reference_date = datetime.now(self.ist_tz).date()
+
+        # weekday() → Monday=0 … Thursday=3 … Sunday=6
+        days_until_thursday = (3 - reference_date.weekday()) % 7
+        return reference_date + timedelta(days=days_until_thursday)
+
+    def is_last_thursday_of_month(self, expiry_date):
+        """
+        Return True when *expiry_date* is the last Thursday of its month,
+        which corresponds to the Nifty monthly (not weekly) expiry.
+
+        The check is simple: if the Thursday one week later falls in the
+        next month, then the current Thursday is the last one.
+
+        Parameters
+        ----------
+        expiry_date : datetime.date
+
+        Returns
+        -------
+        bool
+        """
+        return (expiry_date + timedelta(days=7)).month != expiry_date.month
+
+    def get_atm_strike(self, price):
+        """
+        Round *price* to the nearest Nifty ATM strike.
+
+        Nifty options use ``self.nifty_strike_interval``-point strike
+        intervals (default 50).  For example, a Nifty open of 22,313
+        rounds to 22,300.
+
+        Parameters
+        ----------
+        price : float
+
+        Returns
+        -------
+        int
+        """
+        interval = self.nifty_strike_interval
+        return int(round(price / interval) * interval)
+
+    def build_nifty_option_symbol(self, expiry_date, strike, option_type):
+        """
+        Build a Fyers NSE option symbol string for a Nifty contract.
+
+        Symbol formats (Fyers convention):
+        - Weekly expiry  : ``NSE:NIFTY{YY}{MON}{D}{STRIKE}{CE/PE}``
+          (day without leading zero, e.g. ``3`` for the 3rd)
+        - Monthly expiry : ``NSE:NIFTY{YY}{MON}{STRIKE}{CE/PE}``
+          (last Thursday of the month — no day component)
+
+        Parameters
+        ----------
+        expiry_date : datetime.date
+        strike      : int
+        option_type : str  — ``'CE'`` or ``'PE'``
+
+        Returns
+        -------
+        str  e.g. ``'NSE:NIFTY25APR1024500CE'``
+        """
+        yy = expiry_date.strftime('%y')           # '25'
+        mon = expiry_date.strftime('%b').upper()   # 'APR'
+        day = str(expiry_date.day)                 # '10'  (no leading zero)
+        opt = option_type.upper()                  # 'CE' or 'PE'
+
+        if self.is_last_thursday_of_month(expiry_date):
+            # Monthly expiry — no day in symbol
+            return f"NSE:NIFTY{yy}{mon}{strike}{opt}"
+        else:
+            # Weekly expiry — day included
+            return f"NSE:NIFTY{yy}{mon}{day}{strike}{opt}"
+
+    def _get_nifty_open_from_fyers(self):
+        """
+        Fetch the Nifty 50 opening price (first 1-min candle open) for
+        today via the Fyers API.
+
+        Requires ``FYERS_CLIENT_ID`` and ``FYERS_ACCESS_TOKEN`` to be set
+        in the environment (or a ``.env`` file).
+
+        Returns
+        -------
+        float or None
+            Opening price, or None if credentials are missing / API fails.
+        """
+        try:
+            import os
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+            except ImportError:
+                pass
+
+            client_id = os.environ.get("FYERS_CLIENT_ID", "").strip()
+            access_token = os.environ.get("FYERS_ACCESS_TOKEN", "").strip()
+
+            if not client_id or not access_token:
+                return None
+
+            from fyers_apiv3 import fyersModel
+            fyers = fyersModel.FyersModel(
+                client_id=client_id,
+                token=access_token,
+                is_async=False,
+                log_path=""
+            )
+
+            today = datetime.now(self.ist_tz).date()
+            data = {
+                "symbol": "NSE:NIFTY50-INDEX",
+                "resolution": "1",
+                "date_format": "1",
+                "range_from": str(today),
+                "range_to": str(today),
+                "cont_flag": "1"
+            }
+
+            response = fyers.history(data=data)
+            if response.get('s') == 'ok' and response.get('candles'):
+                # candles[0] → [timestamp, open, high, low, close, volume]
+                return float(response['candles'][0][1])
+
+            return None
+
+        except Exception as e:
+            print(f"  Fyers API error while fetching Nifty open: {e}")
+            return None
+
+    def _get_nifty_open_from_db(self):
+        """
+        Fetch the Nifty 50 opening price from the local SQLite database.
+
+        Tries several common symbol names for the Nifty 50 index and
+        returns the ``ltp`` of the earliest record found.
+
+        Returns
+        -------
+        float or None
+        """
+        nifty_candidates = [
+            "NSE:NIFTY50-INDEX",
+            "NIFTY50-INDEX",
+            "NSE:NIFTY-INDEX",
+            "NIFTY50",
+            "NIFTY 50",
+        ]
+
+        for db_file in self.db_files:
+            try:
+                conn = sqlite3.connect(db_file)
+                for sym in nifty_candidates:
+                    query = """
+                    SELECT ltp
+                    FROM market_data
+                    WHERE symbol = ?
+                    ORDER BY timestamp ASC
+                    LIMIT 1
+                    """
+                    df = pd.read_sql_query(query, conn, params=(sym,))
+                    if not df.empty:
+                        conn.close()
+                        return float(df.iloc[0]['ltp'])
+                conn.close()
+            except Exception:
+                continue
+
+        return None
+
+    def fetch_nifty_atm_contracts(self, reference_date=None):
+        """
+        Dynamically determine the Nifty ATM call and put option symbols
+        for the current (or given) week, based on the Nifty 50 Index
+        opening price.
+
+        Resolution order
+        ----------------
+        1. Determine this week's weekly expiry date (nearest Thursday).
+        2. Obtain the Nifty 50 opening price:
+           a. Fyers API (live/today)  — preferred.
+           b. Local SQLite database   — fallback.
+        3. Round to the nearest ``nifty_strike_interval``-point ATM strike.
+        4. Build and return CE and PE Fyers option symbols.
+
+        Parameters
+        ----------
+        reference_date : datetime.date or None
+            Override the date used to find the weekly expiry. Defaults to
+            today (IST).
+
+        Returns
+        -------
+        tuple[str, str] or tuple[None, None]
+            ``(ce_symbol, pe_symbol)`` on success, ``(None, None)`` if
+            the Nifty opening price cannot be determined.
+
+        Example
+        -------
+        >>> ce, pe = backtester.fetch_nifty_atm_contracts()
+        >>> print(ce)   # e.g.  NSE:NIFTY25APR1024500CE
+        >>> print(pe)   # e.g.  NSE:NIFTY25APR1024500PE
+        """
+        print("\n" + "=" * 60)
+        print("  NIFTY ATM CONTRACT SELECTION")
+        print("=" * 60)
+
+        # Step 1 — expiry date
+        expiry_date = self.get_weekly_expiry_date(reference_date)
+        expiry_label = "Monthly" if self.is_last_thursday_of_month(expiry_date) else "Weekly"
+        print(f"  Expiry Date  : {expiry_date.strftime('%d-%b-%Y')} ({expiry_label})")
+
+        # Step 2 — Nifty 50 opening price
+        print("  Fetching Nifty 50 opening price...")
+        nifty_open = self._get_nifty_open_from_fyers()
+        if nifty_open is not None:
+            print(f"  Price Source : Fyers API")
+        else:
+            print("  Fyers API unavailable — trying local database...")
+            nifty_open = self._get_nifty_open_from_db()
+            if nifty_open is not None:
+                print(f"  Price Source : Local Database")
+
+        if nifty_open is None:
+            print("  ERROR: Could not fetch Nifty 50 opening price from any source.")
+            print("         Set FYERS_CLIENT_ID / FYERS_ACCESS_TOKEN in .env, or")
+            print("         ensure Nifty index data exists in the database.")
+            print("=" * 60)
+            return None, None
+
+        print(f"  Nifty Open   : ₹{nifty_open:,.2f}")
+
+        # Step 3 — ATM strike
+        atm_strike = self.get_atm_strike(nifty_open)
+        print(f"  ATM Strike   : {atm_strike} "
+              f"(nearest {self.nifty_strike_interval}-pt interval)")
+
+        # Step 4 — Build symbols
+        ce_symbol = self.build_nifty_option_symbol(expiry_date, atm_strike, 'CE')
+        pe_symbol = self.build_nifty_option_symbol(expiry_date, atm_strike, 'PE')
+
+        print(f"  CE Symbol    : {ce_symbol}")
+        print(f"  PE Symbol    : {pe_symbol}")
+        print("=" * 60 + "\n")
+
+        return ce_symbol, pe_symbol
+
+    # ------------------------------------------------------------------ #
 
     def load_data_from_all_databases(self, symbol):
         """Load and combine data from all databases"""
@@ -780,10 +1066,67 @@ class ImprovedAdvancedHeikinAshiBacktester:
 
 
 if __name__ == "__main__":
-    # CONFIGURATION 1: Conservative (Lower Risk, Higher Win Rate)
-    print("\n" + "="*100)
-    print("RUNNING IMPROVED STRATEGY - CONSERVATIVE CONFIGURATION")
-    print("="*100)
+    # ------------------------------------------------------------------
+    # CONFIGURATION 1: Nifty ATM Options — dynamic weekly contract fetch
+    #
+    # Set use_nifty_atm=True so that the backtester automatically:
+    #   1. Finds this week's Thursday expiry date.
+    #   2. Fetches the Nifty 50 Index opening price (Fyers API → DB).
+    #   3. Rounds to the nearest 50-pt ATM strike.
+    #   4. Uses the resulting CE and PE symbols as the backtest universe.
+    #
+    # Requires FYERS_CLIENT_ID and FYERS_ACCESS_TOKEN in .env for live
+    # price fetching; falls back to local database otherwise.
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 100)
+    print("RUNNING IMPROVED STRATEGY — NIFTY ATM OPTIONS (DYNAMIC WEEKLY CONTRACTS)")
+    print("=" * 100)
+
+    atm_backtester = ImprovedAdvancedHeikinAshiBacktester(
+        data_folder="data/symbolupdate",
+        symbols=None,           # ATM symbols resolved automatically
+
+        # Nifty ATM contract selection
+        use_nifty_atm=True,     # Enable dynamic ATM contract fetching
+        nifty_strike_interval=50,  # Nifty options trade in 50-pt steps
+
+        # Stricter filters
+        ha_smoothing=3,
+        adx_period=14,
+        adx_threshold=30,
+        volume_percentile=75,
+        consecutive_candles=3,
+
+        # Tighter risk management
+        atr_period=14,
+        atr_multiplier=1.5,
+        breakeven_profit_pct=0.5,
+        max_loss_pct=0.75,
+        min_risk_reward=2.0,
+
+        # Time filters
+        avoid_opening_mins=15,
+        avoid_lunch_start="12:30",
+        avoid_lunch_end="13:30",
+        last_entry_time="14:45",
+
+        # Quality filters
+        min_ha_body_pct=0.15,
+        max_trades_per_day=5,
+
+        initial_capital=100000,
+        square_off_time="15:20",
+        tick_interval='30s'
+    )
+
+    atm_backtester.run_backtest()
+
+    # ------------------------------------------------------------------
+    # CONFIGURATION 2: Conservative — manual symbols / auto-detect from DB
+    # ------------------------------------------------------------------
+    print("\n\n" + "=" * 100)
+    print("RUNNING IMPROVED STRATEGY — CONSERVATIVE CONFIGURATION (DB symbols)")
+    print("=" * 100)
 
     backtester = ImprovedAdvancedHeikinAshiBacktester(
         data_folder="data/symbolupdate",
@@ -792,26 +1135,26 @@ if __name__ == "__main__":
         # Stricter filters
         ha_smoothing=3,
         adx_period=14,
-        adx_threshold=30,  # Increased from 25
-        volume_percentile=75,  # Increased from 60
-        consecutive_candles=3,  # Increased from 2
+        adx_threshold=30,
+        volume_percentile=75,
+        consecutive_candles=3,
 
         # Tighter risk management
         atr_period=14,
-        atr_multiplier=1.5,  # Reduced from 2.0
-        breakeven_profit_pct=0.5,  # Reduced from 1.0
-        max_loss_pct=0.75,  # NEW: Maximum 0.75% loss per trade
-        min_risk_reward=2.0,  # NEW: Minimum 2:1 risk-reward
+        atr_multiplier=1.5,
+        breakeven_profit_pct=0.5,
+        max_loss_pct=0.75,
+        min_risk_reward=2.0,
 
         # Time filters
-        avoid_opening_mins=15,  # NEW: Skip first 15 minutes
-        avoid_lunch_start="12:30",  # NEW: Avoid lunch hour
+        avoid_opening_mins=15,
+        avoid_lunch_start="12:30",
         avoid_lunch_end="13:30",
-        last_entry_time="14:45",  # NEW: No entries after 2:45 PM
+        last_entry_time="14:45",
 
         # Quality filters
-        min_ha_body_pct=0.15,  # NEW: Minimum candle body size
-        max_trades_per_day=5,  # NEW: Limit trades per symbol
+        min_ha_body_pct=0.15,
+        max_trades_per_day=5,
 
         initial_capital=100000,
         square_off_time="15:20",
@@ -819,7 +1162,3 @@ if __name__ == "__main__":
     )
 
     backtester.run_backtest()
-
-    print("\n\n" + "="*100)
-    print("COMPARISON: Run original strategy to compare results")
-    print("="*100)
