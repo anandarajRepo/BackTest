@@ -137,12 +137,12 @@ class ImprovedAdvancedHeikinAshiBacktester:
 
     def get_weekly_expiry_date(self, reference_date=None):
         """
-        Return the nearest upcoming Nifty weekly expiry date (Thursday).
+        Return the nearest upcoming Nifty weekly expiry date (Tuesday).
 
-        - If reference_date is a Thursday, that same date is returned
+        - If reference_date is a Tuesday, that same date is returned
           (today's expiry).
-        - If reference_date falls on Friday / Saturday / Sunday, the
-          *next* Thursday is returned.
+        - If reference_date falls on Wednesday / Thursday / Friday / Saturday / Sunday, the
+          *next* Tuesday is returned.
 
         Parameters
         ----------
@@ -156,17 +156,17 @@ class ImprovedAdvancedHeikinAshiBacktester:
         if reference_date is None:
             reference_date = datetime.now(self.ist_tz).date()
 
-        # weekday() → Monday=0 … Thursday=3 … Sunday=6
-        days_until_thursday = (3 - reference_date.weekday()) % 7
-        return reference_date + timedelta(days=days_until_thursday)
+        # weekday() → Monday=0 … Tuesday=1 … Sunday=6
+        days_until_tuesday = (1 - reference_date.weekday()) % 7
+        return reference_date + timedelta(days=days_until_tuesday)
 
-    def is_last_thursday_of_month(self, expiry_date):
+    def is_last_tuesday_of_month(self, expiry_date):
         """
-        Return True when *expiry_date* is the last Thursday of its month,
+        Return True when *expiry_date* is the last Tuesday of its month,
         which corresponds to the Nifty monthly (not weekly) expiry.
 
-        The check is simple: if the Thursday one week later falls in the
-        next month, then the current Thursday is the last one.
+        The check is simple: if the Tuesday one week later falls in the
+        next month, then the current Tuesday is the last one.
 
         Parameters
         ----------
@@ -205,7 +205,7 @@ class ImprovedAdvancedHeikinAshiBacktester:
         - Weekly expiry  : ``NSE:NIFTY{YY}{MON}{D}{STRIKE}{CE/PE}``
           (day without leading zero, e.g. ``3`` for the 3rd)
         - Monthly expiry : ``NSE:NIFTY{YY}{MON}{STRIKE}{CE/PE}``
-          (last Thursday of the month — no day component)
+          (last Tuesday of the month — no day component)
 
         Parameters
         ----------
@@ -222,7 +222,7 @@ class ImprovedAdvancedHeikinAshiBacktester:
         day = str(expiry_date.day)                 # '10'  (no leading zero)
         opt = option_type.upper()                  # 'CE' or 'PE'
 
-        if self.is_last_thursday_of_month(expiry_date):
+        if self.is_last_tuesday_of_month(expiry_date):
             # Monthly expiry — no day in symbol
             return f"NSE:NIFTY{yy}{mon}{strike}{opt}"
         else:
@@ -333,7 +333,7 @@ class ImprovedAdvancedHeikinAshiBacktester:
 
         Resolution order
         ----------------
-        1. Determine this week's weekly expiry date (nearest Thursday).
+        1. Determine this week's weekly expiry date (nearest Tuesday).
         2. Obtain the Nifty 50 opening price:
            a. Fyers API (live/today)  — preferred.
            b. Local SQLite database   — fallback.
@@ -364,7 +364,7 @@ class ImprovedAdvancedHeikinAshiBacktester:
 
         # Step 1 — expiry date
         expiry_date = self.get_weekly_expiry_date(reference_date)
-        expiry_label = "Monthly" if self.is_last_thursday_of_month(expiry_date) else "Weekly"
+        expiry_label = "Monthly" if self.is_last_tuesday_of_month(expiry_date) else "Weekly"
         print(f"  Expiry Date  : {expiry_date.strftime('%d-%b-%Y')} ({expiry_label})")
 
         # Step 2 — Nifty 50 opening price
@@ -1026,7 +1026,7 @@ if __name__ == "__main__":
     # CONFIGURATION 1: Nifty ATM Options — dynamic weekly contract fetch
     #
     # Set use_nifty_atm=True so that the backtester automatically:
-    #   1. Finds this week's Thursday expiry date.
+    #   1. Finds this week's Tuesday expiry date.
     #   2. Fetches the Nifty 50 Index opening price (Fyers API → DB).
     #   3. Rounds to the nearest 50-pt ATM strike.
     #   4. Uses the resulting CE and PE symbols as the backtest universe.
