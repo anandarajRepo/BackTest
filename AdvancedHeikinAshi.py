@@ -22,7 +22,8 @@ class ImprovedAdvancedHeikinAshiBacktester:
                  avoid_opening_mins=15, avoid_lunch_start="12:30",
                  avoid_lunch_end="13:30", last_entry_time="14:45",
                  min_ha_body_pct=0.15, max_trades_per_day=5,
-                 use_nifty_atm=False, nifty_strike_interval=50):
+                 use_nifty_atm=False, nifty_strike_interval=50,
+                 backtest_days=None):
         """
         IMPROVED Advanced Heikin Ashi Strategy with Better Risk Management
 
@@ -70,6 +71,9 @@ class ImprovedAdvancedHeikinAshiBacktester:
         self.min_ha_body_pct = min_ha_body_pct / 100
         self.max_trades_per_day = max_trades_per_day
 
+        # Backtest period filter
+        self.backtest_days = backtest_days
+
         # Nifty ATM contract selection
         self.use_nifty_atm = use_nifty_atm
         self.nifty_strike_interval = nifty_strike_interval
@@ -94,6 +98,7 @@ class ImprovedAdvancedHeikinAshiBacktester:
         print(f"  Min Risk-Reward: {min_risk_reward}:1 (NEW)")
         print(f"  Min HA Body Size: {min_ha_body_pct}% (NEW)")
         print(f"  Max Trades/Day: {max_trades_per_day} (NEW)")
+        print(f"  Backtest Period: {'Last ' + str(backtest_days) + ' days' if backtest_days else 'All available data'}")
         print(f"  Trading Hours: {avoid_opening_mins} mins after open, avoid {avoid_lunch_start}-{avoid_lunch_end}")
         print(f"  Last Entry: {last_entry_time} IST")
         print(f"  Square-off Time: {square_off_time} IST")
@@ -724,6 +729,25 @@ class ImprovedAdvancedHeikinAshiBacktester:
         df['trading_day'] = df.index.date
         df['is_square_off'] = df.index.map(self.is_square_off_time)
 
+        # ── Backtest-days window filter ────────────────────────────────────
+        # Indicators are computed on the full history so that values at the
+        # start of the window are accurate.  The trading loop only runs over
+        # the requested window.
+        if self.backtest_days is not None:
+            cutoff_date = (
+                datetime.now(self.ist_tz) - timedelta(days=self.backtest_days)
+            ).date()
+            backtest_df = df[df.index.date >= cutoff_date].copy()
+            if backtest_df.empty:
+                print(f"  No data found within the last {self.backtest_days} days for {symbol}. Skipping.")
+                return None
+            first_day = backtest_df.index.date[0]
+            last_day  = backtest_df.index.date[-1]
+            print(f"  Backtest window : {first_day} → {last_day} ({self.backtest_days}-day filter)")
+        else:
+            backtest_df = df
+        # ──────────────────────────────────────────────────────────────────
+
         # Trading variables
         cash = self.initial_capital
         position = 0
@@ -737,14 +761,14 @@ class ImprovedAdvancedHeikinAshiBacktester:
         trade_number = 0
         trades_today = {}  # NEW: Track trades per day
 
-        # Backtest loop
-        for i in range(len(df)):
-            current_time = df.index[i]
-            current_price = df.iloc[i]['close']
-            current_atr = df.iloc[i]['atr']
-            current_adx = df.iloc[i]['adx']
-            is_square_off = df.iloc[i]['is_square_off']
-            current_day = df.iloc[i]['trading_day']
+        # Backtest loop (runs over backtest_df — the filtered window)
+        for i in range(len(backtest_df)):
+            current_time = backtest_df.index[i]
+            current_price = backtest_df.iloc[i]['close']
+            current_atr = backtest_df.iloc[i]['atr']
+            current_adx = backtest_df.iloc[i]['adx']
+            is_square_off = backtest_df.iloc[i]['is_square_off']
+            current_day = backtest_df.iloc[i]['trading_day']
 
             # Initialize day counter
             if current_day not in trades_today:
@@ -785,7 +809,7 @@ class ImprovedAdvancedHeikinAshiBacktester:
                 trades_today[current_day] += 1
 
             # Entry signal with enhanced validation
-            elif position == 0 and df.iloc[i]['buy_signal'] and not is_square_off:
+            elif position == 0 and backtest_df.iloc[i]['buy_signal'] and not is_square_off:
                 # NEW: Check trade frequency limit
                 if trades_today[current_day] >= self.max_trades_per_day:
                     continue
@@ -833,7 +857,7 @@ class ImprovedAdvancedHeikinAshiBacktester:
                 if current_price <= trailing_stop:
                     exit_signal = True
                     exit_reason = "STOP_LOSS" if current_price < entry_price else "TRAILING_STOP"
-                elif df.iloc[i]['sell_signal']:
+                elif backtest_df.iloc[i]['sell_signal']:
                     exit_signal = True
                     exit_reason = "HA_BEARISH"
 
@@ -876,7 +900,7 @@ class ImprovedAdvancedHeikinAshiBacktester:
 
         return {
             'symbol': symbol,
-            'data': df,
+            'data': backtest_df,
             'trades': trades,
             'metrics': metrics
         }
@@ -956,6 +980,124 @@ class ImprovedAdvancedHeikinAshiBacktester:
             'max_consecutive_losses': max_consecutive
         }
 
+    def print_backtest_days_report(self):
+        """Print a detailed per-day breakdown when backtest_days is set."""
+        if not self.results or self.backtest_days is None:
+            return
+
+        print(f"\n{'='*100}")
+        print(f"BACKTEST REPORT — LAST {self.backtest_days} DAYS")
+        print(f"{'='*100}")
+
+        # ── Collect all trades, tagged with their symbol ──────────────────
+        all_trades = []
+        for symbol, result in self.results.items():
+            clean = (symbol.split(':')[1].replace('-EQ', '')
+                     if ':' in symbol else symbol.replace('-EQ', ''))
+            for t in result['trades']:
+                all_trades.append({**t, 'symbol': clean})
+
+        if not all_trades:
+            print("No trades were executed in the specified period.")
+            return
+
+        # ── Per-day summary ───────────────────────────────────────────────
+        trades_by_day = {}
+        for t in all_trades:
+            d = t['entry_time'].date()
+            trades_by_day.setdefault(d, []).append(t)
+
+        print(f"\n{'─'*100}")
+        print("DAILY SUMMARY")
+        print(f"{'─'*100}")
+
+        day_rows = []
+        for d in sorted(trades_by_day):
+            day_trades = trades_by_day[d]
+            day_pnl    = sum(t['pnl'] for t in day_trades)
+            wins       = sum(1 for t in day_trades if t['pnl'] > 0)
+            losses     = len(day_trades) - wins
+            win_rate   = wins / len(day_trades) * 100
+            status     = 'PROFIT' if day_pnl > 0 else ('LOSS' if day_pnl < 0 else 'BREAKEVEN')
+            day_rows.append({
+                'Date'      : d.strftime('%Y-%m-%d (%a)'),
+                'Trades'    : len(day_trades),
+                'Wins'      : wins,
+                'Losses'    : losses,
+                'Win Rate'  : f"{win_rate:.1f}%",
+                'Day P&L'   : f"Rs.{day_pnl:+,.2f}",
+                'Status'    : status,
+            })
+
+        day_df = pd.DataFrame(day_rows)
+        print(day_df.to_string(index=False))
+
+        # ── Per-symbol per-day breakdown ──────────────────────────────────
+        print(f"\n{'─'*100}")
+        print("PER-SYMBOL DAILY BREAKDOWN")
+        print(f"{'─'*100}")
+
+        sym_day_rows = []
+        for symbol, result in self.results.items():
+            clean = (symbol.split(':')[1].replace('-EQ', '')
+                     if ':' in symbol else symbol.replace('-EQ', ''))
+            sym_by_day = {}
+            for t in result['trades']:
+                d = t['entry_time'].date()
+                sym_by_day.setdefault(d, []).append(t)
+            for d in sorted(sym_by_day):
+                ts   = sym_by_day[d]
+                pnl  = sum(t['pnl'] for t in ts)
+                wins = sum(1 for t in ts if t['pnl'] > 0)
+                sym_day_rows.append({
+                    'Date'   : d.strftime('%Y-%m-%d'),
+                    'Symbol' : clean,
+                    'Trades' : len(ts),
+                    'Wins'   : wins,
+                    'Losses' : len(ts) - wins,
+                    'P&L'    : f"Rs.{pnl:+,.2f}",
+                })
+
+        if sym_day_rows:
+            sym_day_df = pd.DataFrame(sym_day_rows)
+            print(sym_day_df.to_string(index=False))
+
+        # ── Period-level summary ──────────────────────────────────────────
+        total_pnl        = sum(t['pnl'] for t in all_trades)
+        total_wins       = sum(1 for t in all_trades if t['pnl'] > 0)
+        profitable_days  = sum(1 for ts in trades_by_day.values()
+                               if sum(t['pnl'] for t in ts) > 0)
+        avg_daily_pnl    = total_pnl / len(trades_by_day) if trades_by_day else 0
+        best_day_pnl     = max(sum(t['pnl'] for t in ts)
+                               for ts in trades_by_day.values())
+        worst_day_pnl    = min(sum(t['pnl'] for t in ts)
+                               for ts in trades_by_day.values())
+
+        print(f"\n{'─'*100}")
+        print(f"PERIOD SUMMARY  (Last {self.backtest_days} days)")
+        print(f"{'─'*100}")
+        print(f"  Trading Days with Activity : {len(trades_by_day)}")
+        print(f"  Total Trades               : {len(all_trades)}")
+        print(f"  Total P&L                  : Rs.{total_pnl:+,.2f}")
+        print(f"  Average Daily P&L          : Rs.{avg_daily_pnl:+,.2f}")
+        print(f"  Best Day P&L               : Rs.{best_day_pnl:+,.2f}")
+        print(f"  Worst Day P&L              : Rs.{worst_day_pnl:+,.2f}")
+        print(f"  Overall Win Rate           : {(total_wins / len(all_trades) * 100):.1f}%")
+        print(f"  Profitable Days            : {profitable_days}/{len(trades_by_day)}")
+
+        # ── Save to CSV ───────────────────────────────────────────────────
+        os.makedirs('output', exist_ok=True)
+        report_path = f"output/backtest_{self.backtest_days}days_report.csv"
+        day_df.to_csv(report_path, index=False)
+        print(f"\n  Report saved to : {report_path}")
+
+        if sym_day_rows:
+            detail_path = f"output/backtest_{self.backtest_days}days_symbol_detail.csv"
+            sym_day_df.to_csv(detail_path, index=False)
+            print(f"  Detail saved to : {detail_path}")
+
+        print(f"{'='*100}")
+
     def run_backtest(self):
         """Run backtest for all symbols"""
         print(f"\n{'='*100}")
@@ -971,6 +1113,7 @@ class ImprovedAdvancedHeikinAshiBacktester:
                 print(f"Error backtesting {symbol}: {e}")
 
         self.print_summary()
+        self.print_backtest_days_report()
 
     def print_summary(self):
         """Print enhanced summary"""
@@ -1017,13 +1160,14 @@ class ImprovedAdvancedHeikinAshiBacktester:
         print(f"Overall Win Rate: {(winning_trades / total_trades * 100):.1f}%")
         print(f"Profitable Symbols: {profitable_symbols}/{len(self.results)}")
 
+        os.makedirs('output', exist_ok=True)
         summary_df.to_csv('output/improved_heikin_ashi_results.csv', index=False)
         print(f"\n✅ Results saved to: output/improved_heikin_ashi_results.csv")
 
 
 if __name__ == "__main__":
     # ------------------------------------------------------------------
-    # CONFIGURATION 1: Nifty ATM Options — dynamic weekly contract fetch
+    # CONFIGURATION: Nifty ATM Options — dynamic weekly contract fetch
     #
     # Set use_nifty_atm=True so that the backtester automatically:
     #   1. Finds this week's Tuesday expiry date.
@@ -1033,10 +1177,29 @@ if __name__ == "__main__":
     #
     # Requires FYERS_CLIENT_ID and FYERS_ACCESS_TOKEN in .env for live
     # price fetching; falls back to local database otherwise.
+    #
+    # backtest_days (optional)
+    # ─────────────────────────
+    # Set backtest_days=N to restrict the backtest to the last N calendar
+    # days only.  Indicators (ADX, ATR, HA) are still computed on the full
+    # history so warm-up is accurate; only the trade-execution loop runs
+    # over the N-day window.
+    #
+    # Examples:
+    #   backtest_days=15   → last 15 calendar days
+    #   backtest_days=30   → last 30 calendar days
+    #   backtest_days=None → use all available data  (default)
+    #
+    # A detailed per-day report is printed and saved to:
+    #   output/backtest_<N>days_report.csv
+    #   output/backtest_<N>days_symbol_detail.csv
     # ------------------------------------------------------------------
     print("\n" + "=" * 100)
     print("RUNNING IMPROVED STRATEGY — NIFTY ATM OPTIONS (DYNAMIC WEEKLY CONTRACTS)")
     print("=" * 100)
+
+    # ── Change backtest_days to the number of past days you want to test ──
+    BACKTEST_DAYS = 15   # e.g. 15 → last 15 calendar days; None → all data
 
     atm_backtester = ImprovedAdvancedHeikinAshiBacktester(
         data_folder="data/symbolupdate",
@@ -1072,7 +1235,10 @@ if __name__ == "__main__":
 
         initial_capital=100000,
         square_off_time="15:20",
-        tick_interval='30s'
+        tick_interval='30s',
+
+        # ── Backtest window ──────────────────────────────────────────────
+        backtest_days=BACKTEST_DAYS,  # None = all data; N = last N days
     )
 
     atm_backtester.run_backtest()
