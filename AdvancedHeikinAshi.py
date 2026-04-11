@@ -417,6 +417,122 @@ class ImprovedAdvancedHeikinAshiBacktester:
 
     # ------------------------------------------------------------------ #
 
+    def load_data_from_fyers(self, symbol):
+        """Load historical OHLCV data from Fyers API.
+
+        Used as a fallback when the local SQLite databases do not contain
+        data for *symbol* (e.g. freshly-resolved ATM option contracts).
+
+        Credentials are read from the environment (or a .env file):
+            FYERS_CLIENT_ID   – Fyers app client id
+            FYERS_ACCESS_TOKEN – valid access token
+
+        The method fetches 1-minute candles (finest resolution available
+        from Fyers) for the backtest window and resamples down to
+        ``self.tick_interval`` when that interval is ≥ 1 minute.
+
+        Returns
+        -------
+        pd.DataFrame or None
+        """
+        try:
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+            except ImportError:
+                pass
+
+            client_id = os.environ.get("FYERS_CLIENT_ID", "").strip()
+            access_token = os.environ.get("FYERS_ACCESS_TOKEN", "").strip()
+
+            if not client_id or not access_token:
+                print(f"  Fyers credentials missing (FYERS_CLIENT_ID / FYERS_ACCESS_TOKEN). "
+                      f"Cannot fetch data from API.")
+                return None
+
+            from fyers_apiv3 import fyersModel
+            fyers = fyersModel.FyersModel(
+                client_id=client_id,
+                token=access_token,
+                is_async=False,
+                log_path=""
+            )
+
+            print(f"  Fetching data from Fyers API for {symbol}...")
+
+            # Build date range: use backtest_days if set, else default to 30 days.
+            # Add a small buffer (5 days) to account for weekends and market holidays.
+            fetch_days = (self.backtest_days if self.backtest_days else 30) + 5
+            now = datetime.now(self.ist_tz)
+            start_dt = now - timedelta(days=fetch_days)
+            range_from = int(start_dt.timestamp())
+            range_to = int(now.timestamp())
+
+            data = {
+                "symbol": symbol,
+                "resolution": "1",       # 1-minute candles – finest Fyers resolution
+                "date_format": "0",      # Unix timestamps
+                "range_from": str(range_from),
+                "range_to": str(range_to),
+                "cont_flag": "1"
+            }
+
+            response = fyers.history(data=data)
+
+            if response.get('s') != 'ok' or 'candles' not in response:
+                print(f"  Fyers API error for {symbol}: "
+                      f"{response.get('message', 'no candles returned')}")
+                return None
+
+            candles = response['candles']
+            if not candles:
+                print(f"  No candles returned from Fyers for {symbol}")
+                return None
+
+            df = pd.DataFrame(candles,
+                              columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+            df = df.set_index('timestamp')
+
+            # Convert UTC → IST, then strip timezone for uniform handling
+            df.index = (df.index
+                        .tz_localize('UTC')
+                        .tz_convert(self.ist_tz)
+                        .tz_localize(None))
+
+            # Keep only market hours
+            df = df.between_time('09:00', '15:30')
+            df = df.dropna(subset=['close', 'high', 'low'])
+
+            if df.empty:
+                print(f"  No usable candles after market-hours filter for {symbol}")
+                return None
+
+            print(f"  Loaded {len(df)} 1-min candles from Fyers "
+                  f"({df.index[0].date()} → {df.index[-1].date()})")
+
+            df = df[['open', 'high', 'low', 'close', 'volume']].copy()
+
+            # Resample down to tick_interval only when the target interval is
+            # coarser than 1 minute (we cannot upsample from 1-min data).
+            if self.tick_interval is not None:
+                try:
+                    target = pd.tseries.frequencies.to_offset(self.tick_interval)
+                    one_min = pd.tseries.frequencies.to_offset('1T')
+                    if target >= one_min:
+                        df = self.resample_tick_data(df, self.tick_interval)
+                        print(f"  Resampled to {self.tick_interval}: {len(df)} candles")
+                except Exception:
+                    pass  # keep 1-minute data if interval parsing fails
+
+            return df
+
+        except Exception as e:
+            print(f"  Error fetching from Fyers API for {symbol}: {e}")
+            return None
+
+    # ------------------------------------------------------------------ #
+
     def load_data_from_all_databases(self, symbol):
         """Load and combine data from all databases"""
         combined_df = pd.DataFrame()
@@ -755,7 +871,14 @@ class ImprovedAdvancedHeikinAshiBacktester:
 
         df = self.load_data_from_all_databases(symbol)
 
-        if df is None or len(df) < max(self.adx_period, self.atr_period, self.ha_smoothing) * 3:
+        min_points = max(self.adx_period, self.atr_period, self.ha_smoothing) * 3
+        if df is None or len(df) < min_points:
+            print(f"  DB has insufficient data for {symbol} "
+                  f"({len(df) if df is not None else 0} rows, need {min_points}). "
+                  f"Falling back to Fyers API...")
+            df = self.load_data_from_fyers(symbol)
+
+        if df is None or len(df) < min_points:
             print(f"Insufficient data for {symbol}. Skipping.")
             return None
 
