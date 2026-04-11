@@ -207,9 +207,9 @@ class ImprovedAdvancedHeikinAshiBacktester:
         Build a Fyers NSE option symbol string for a Nifty contract.
 
         Symbol formats (Fyers convention):
-        - Weekly expiry  : ``NSE:NIFTY{YY}{MON}{D}{STRIKE}{CE/PE}``
-          (day without leading zero, e.g. ``3`` for the 3rd)
-        - Monthly expiry : ``NSE:NIFTY{YY}{MON}{STRIKE}{CE/PE}``
+        - Weekly expiry  : ``NSE:NIFTY{YY}{M}{D}{STRIKE}{CE/PE}``
+          (month and day without leading zeros, e.g. ``4`` and ``3``)
+        - Monthly expiry : ``NSE:NIFTY{YY}{M}{STRIKE}{CE/PE}``
           (last Tuesday of the month — no day component)
 
         Parameters
@@ -220,10 +220,10 @@ class ImprovedAdvancedHeikinAshiBacktester:
 
         Returns
         -------
-        str  e.g. ``'NSE:NIFTY25APR1024500CE'``
+        str  e.g. ``'NSE:NIFTY2641024500CE'``
         """
         yy = expiry_date.strftime('%y')           # '25'
-        mon = expiry_date.strftime('%b').upper()   # 'APR'
+        mon = str(expiry_date.month)               # '4'  (no leading zero)
         day = str(expiry_date.day)                 # '10'  (no leading zero)
         opt = option_type.upper()                  # 'CE' or 'PE'
 
@@ -368,8 +368,8 @@ class ImprovedAdvancedHeikinAshiBacktester:
         Example
         -------
         >>> ce, pe = backtester.fetch_nifty_atm_contracts()
-        >>> print(ce)   # e.g.  NSE:NIFTY25APR1024500CE
-        >>> print(pe)   # e.g.  NSE:NIFTY25APR1024500PE
+        >>> print(ce)   # e.g.  NSE:NIFTY2541024500CE
+        >>> print(pe)   # e.g.  NSE:NIFTY2541024500PE
         """
         print("\n" + "=" * 60)
         print("  NIFTY ATM CONTRACT SELECTION")
