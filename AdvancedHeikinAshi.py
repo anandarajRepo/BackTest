@@ -1402,7 +1402,7 @@ if __name__ == "__main__":
         # Toggle risk management: True = stop loss / breakeven / risk-reward active
         #                         False = no stop loss, no breakeven, no risk-reward filter
         #                                 (only HA entry and HA exit signals used)
-        risk_management=True,
+        risk_management=False,
 
         # Time filters
         avoid_opening_mins=15,
