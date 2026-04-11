@@ -19,6 +19,7 @@ class ImprovedAdvancedHeikinAshiBacktester:
                  initial_capital=100000, square_off_time="15:20",
                  min_data_points=100, tick_interval=None,
                  max_loss_pct=0.75, min_risk_reward=2.0,
+                 risk_management=True,
                  avoid_opening_mins=15, avoid_lunch_start="12:30",
                  avoid_lunch_end="13:30", last_entry_time="14:45",
                  min_ha_body_pct=0.15, max_trades_per_day=5,
@@ -40,6 +41,7 @@ class ImprovedAdvancedHeikinAshiBacktester:
         ---------------
         - max_loss_pct: Maximum loss per trade (0.75% default)
         - min_risk_reward: Minimum risk-reward ratio (2.0 = 2:1)
+        - risk_management: Toggle all risk management (True=enabled, False=HA signals only)
         - avoid_opening_mins: Skip first N minutes (15 mins)
         - avoid_lunch_start/end: Lunch hour to avoid
         - last_entry_time: No new trades after this time
@@ -64,6 +66,7 @@ class ImprovedAdvancedHeikinAshiBacktester:
         # NEW: Enhanced risk management parameters
         self.max_loss_pct = max_loss_pct / 100
         self.min_risk_reward = min_risk_reward
+        self.risk_management = risk_management
         self.avoid_opening_mins = avoid_opening_mins
         self.avoid_lunch_start = self.parse_square_off_time(avoid_lunch_start)
         self.avoid_lunch_end = self.parse_square_off_time(avoid_lunch_end)
@@ -96,6 +99,7 @@ class ImprovedAdvancedHeikinAshiBacktester:
         print(f"  Breakeven Trigger: {breakeven_profit_pct}% (FASTER)")
         print(f"  Max Loss Per Trade: {max_loss_pct}% (NEW)")
         print(f"  Min Risk-Reward: {min_risk_reward}:1 (NEW)")
+        print(f"  Risk Management: {'ENABLED (stop loss / breakeven / risk-reward active)' if risk_management else 'DISABLED (HA entry/exit signals only)'}")
         print(f"  Min HA Body Size: {min_ha_body_pct}% (NEW)")
         print(f"  Max Trades/Day: {max_trades_per_day} (NEW)")
         print(f"  Backtest Period: {'Last ' + str(backtest_days) + ' days' if backtest_days else 'All available data'}")
@@ -980,47 +984,54 @@ class ImprovedAdvancedHeikinAshiBacktester:
                 if trades_today[current_day] >= self.max_trades_per_day:
                     continue
 
-                # Calculate stops
-                atr_stop = current_price - (current_atr * self.atr_multiplier)
-                max_loss_stop = current_price * (1 - self.max_loss_pct)
-                initial_stop = max(atr_stop, max_loss_stop)
+                if self.risk_management:
+                    # Calculate stops
+                    atr_stop = current_price - (current_atr * self.atr_multiplier)
+                    max_loss_stop = current_price * (1 - self.max_loss_pct)
+                    initial_stop = max(atr_stop, max_loss_stop)
 
-                # NEW: Validate risk-reward ratio
-                risk_reward = self.calculate_risk_reward(current_price, initial_stop, current_atr, current_adx)
+                    # Validate risk-reward ratio
+                    risk_reward = self.calculate_risk_reward(current_price, initial_stop, current_atr, current_adx)
 
-                if risk_reward < self.min_risk_reward:
-                    continue  # Skip trade with poor risk-reward
+                    if risk_reward < self.min_risk_reward:
+                        continue  # Skip trade with poor risk-reward
+
+                    trailing_stop = initial_stop
+                    max_stop = max_loss_stop
+                else:
+                    # Risk management disabled — no stop loss or risk-reward filter
+                    trailing_stop = 0
+                    max_stop = 0
 
                 position = 1
                 entry_price = current_price
                 entry_time = current_time
                 entry_atr = current_atr
-                trailing_stop = initial_stop
-                max_stop = max_loss_stop
                 breakeven_triggered = False
 
             # Exit management
             elif position == 1:
-                # Update trailing stop
-                if current_price > entry_price:
-                    atr_stop = current_price - (current_atr * self.atr_multiplier)
+                if self.risk_management:
+                    # Update trailing stop
+                    if current_price > entry_price:
+                        atr_stop = current_price - (current_atr * self.atr_multiplier)
 
-                    # Breakeven protection (faster trigger)
-                    if current_price >= entry_price * (1 + self.breakeven_profit_pct):
-                        if not breakeven_triggered:
-                            breakeven_triggered = True
-                        trailing_stop = max(trailing_stop, entry_price, atr_stop)
-                    else:
-                        trailing_stop = max(trailing_stop, atr_stop)
+                        # Breakeven protection (faster trigger)
+                        if current_price >= entry_price * (1 + self.breakeven_profit_pct):
+                            if not breakeven_triggered:
+                                breakeven_triggered = True
+                            trailing_stop = max(trailing_stop, entry_price, atr_stop)
+                        else:
+                            trailing_stop = max(trailing_stop, atr_stop)
 
-                    # Ensure we don't violate max loss
-                    trailing_stop = max(trailing_stop, max_stop)
+                        # Ensure we don't violate max loss
+                        trailing_stop = max(trailing_stop, max_stop)
 
                 exit_signal = False
                 exit_reason = ""
 
                 # Check exits
-                if current_price <= trailing_stop:
+                if self.risk_management and current_price <= trailing_stop:
                     exit_signal = True
                     exit_reason = "STOP_LOSS" if current_price < entry_price else "TRAILING_STOP"
                 elif backtest_df.iloc[i]['sell_signal']:
@@ -1388,6 +1399,10 @@ if __name__ == "__main__":
         breakeven_profit_pct=0.5,
         max_loss_pct=0.75,
         min_risk_reward=2.0,
+        # Toggle risk management: True = stop loss / breakeven / risk-reward active
+        #                         False = no stop loss, no breakeven, no risk-reward filter
+        #                                 (only HA entry and HA exit signals used)
+        risk_management=True,
 
         # Time filters
         avoid_opening_mins=15,
