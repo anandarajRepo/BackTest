@@ -270,12 +270,20 @@ class ImprovedAdvancedHeikinAshiBacktester:
             )
 
             today = datetime.now(self.ist_tz).date()
+            # Roll back to Friday if today is Saturday (5) or Sunday (6)
+            weekday = today.weekday()
+            if weekday == 5:        # Saturday → go back 1 day to Friday
+                trading_day = today - timedelta(days=1)
+            elif weekday == 6:      # Sunday → go back 2 days to Friday
+                trading_day = today - timedelta(days=2)
+            else:
+                trading_day = today
             data = {
                 "symbol": "NSE:NIFTY50-INDEX",
                 "resolution": "1",
                 "date_format": "1",
-                "range_from": str(today),
-                "range_to": str(today),
+                "range_from": str(trading_day),
+                "range_to": str(trading_day),
                 "cont_flag": "1"
             }
 
