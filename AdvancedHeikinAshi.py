@@ -498,6 +498,40 @@ class ImprovedAdvancedHeikinAshiBacktester:
         except Exception as e:
             return None
 
+    def resolve_trading_day_cutoff(self, df):
+        """
+        Return the cutoff date so that only the last ``backtest_days``
+        *actual trading days* (dates present in *df*) are included.
+
+        Why: using calendar days fails on weekends / market holidays because
+        ``datetime.now() - timedelta(days=N)`` may land on a day with no
+        market data.  Instead we look at which dates really have data and
+        count backwards N trading sessions from the most-recent one.
+
+        Parameters
+        ----------
+        df : pd.DataFrame with a DatetimeIndex
+
+        Returns
+        -------
+        datetime.date
+            The earliest trading date to include (inclusive).
+        """
+        # Unique sorted trading dates present in the data
+        trading_dates = sorted(set(df.index.date))
+
+        if not trading_dates:
+            # Fallback to calendar-day cutoff if somehow empty
+            return (datetime.now(self.ist_tz) - timedelta(days=self.backtest_days)).date()
+
+        n = self.backtest_days
+        if n >= len(trading_dates):
+            # Requested more days than available — use all data
+            return trading_dates[0]
+
+        # The Nth-from-last trading date is the cutoff
+        return trading_dates[-n]
+
     def resample_tick_data(self, df, interval):
         """Resample tick data to specified time interval"""
         if df is None or df.empty:
@@ -734,16 +768,17 @@ class ImprovedAdvancedHeikinAshiBacktester:
         # start of the window are accurate.  The trading loop only runs over
         # the requested window.
         if self.backtest_days is not None:
-            cutoff_date = (
-                datetime.now(self.ist_tz) - timedelta(days=self.backtest_days)
-            ).date()
+            # Use actual trading days present in the data instead of calendar
+            # days so that weekends / market holidays do not shift the window.
+            cutoff_date = self.resolve_trading_day_cutoff(df)
             backtest_df = df[df.index.date >= cutoff_date].copy()
             if backtest_df.empty:
-                print(f"  No data found within the last {self.backtest_days} days for {symbol}. Skipping.")
+                print(f"  No data found within the last {self.backtest_days} trading days for {symbol}. Skipping.")
                 return None
             first_day = backtest_df.index.date[0]
             last_day  = backtest_df.index.date[-1]
-            print(f"  Backtest window : {first_day} → {last_day} ({self.backtest_days}-day filter)")
+            actual_days = len(set(backtest_df.index.date))
+            print(f"  Backtest window : {first_day} → {last_day} ({actual_days} trading day(s), requested {self.backtest_days})")
         else:
             backtest_df = df
         # ──────────────────────────────────────────────────────────────────
