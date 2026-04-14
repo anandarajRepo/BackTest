@@ -733,7 +733,7 @@ if __name__ == "__main__":
     print("ADX CROSSOVER STRATEGY — NIFTY ATM OPTIONS (DYNAMIC WEEKLY CONTRACTS)")
     print("=" * 100)
 
-    BACKTEST_DAYS = 15
+    BACKTEST_DAYS = 90
 
     bt = ADXCrossoverBacktester(
         data_folder="data/symbolupdate",
