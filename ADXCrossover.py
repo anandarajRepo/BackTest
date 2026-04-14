@@ -68,16 +68,22 @@ class ADXCrossoverBacktester:
         if symbols is not None:
             self.symbols = symbols
         elif self.use_nifty_atm:
-            ce_sym, pe_sym = self.fetch_nifty_atm_contracts()
-            if ce_sym and pe_sym:
-                self.symbols = [ce_sym, pe_sym]
-            else:
-                print("ATM fetch failed — no symbols to backtest.")
+            if self.backtest_days is not None and self.backtest_days >= 90:
+                # Weekly expiry mode: one ATM contract per expiry, resolved at backtest time
+                print("  Mode: Weekly Expiry Backtest — symbols resolved per-expiry during run")
                 self.symbols = []
+            else:
+                ce_sym, pe_sym = self.fetch_nifty_atm_contracts()
+                if ce_sym and pe_sym:
+                    self.symbols = [ce_sym, pe_sym]
+                else:
+                    print("ATM fetch failed — no symbols to backtest.")
+                    self.symbols = []
         else:
             self.symbols = []
 
-        print(f"\nSymbols to backtest: {self.symbols}")
+        if self.symbols:
+            print(f"\nSymbols to backtest: {self.symbols}")
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -627,12 +633,340 @@ class ADXCrossoverBacktester:
             'profit_factor': total_wins / total_losses if total_losses > 0 else 0,
             'max_consecutive_losses': max_consec}
 
+    # ── Weekly expiry backtest ───────────────────────────────────────────
+
+    def get_all_weekly_expiries_in_window(self, start_date, end_date):
+        """Return all weekly Nifty expiry (Tuesday) dates in [start_date, end_date]."""
+        expiries = []
+        days_to_tuesday = (1 - start_date.weekday()) % 7
+        current = start_date + timedelta(days=days_to_tuesday)
+        while current <= end_date:
+            expiries.append(current)
+            current += timedelta(days=7)
+        return expiries
+
+    def _get_historical_nifty_opens(self, start_date, end_date):
+        """Fetch Nifty 50 daily open prices for the date range via Fyers API."""
+        try:
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+            except ImportError:
+                pass
+            client_id = os.environ.get("FYERS_CLIENT_ID", "").strip()
+            access_token = os.environ.get("FYERS_ACCESS_TOKEN", "").strip()
+            if not client_id or not access_token:
+                print("  Fyers credentials missing — cannot fetch historical Nifty opens.")
+                return {}
+            from fyers_apiv3 import fyersModel
+            fyers = fyersModel.FyersModel(
+                client_id=client_id, token=access_token, is_async=False, log_path="")
+            data = {
+                "symbol": "NSE:NIFTY50-INDEX",
+                "resolution": "D",
+                "date_format": "1",
+                "range_from": str(start_date),
+                "range_to": str(end_date),
+                "cont_flag": "1"
+            }
+            response = fyers.history(data=data)
+            if response.get('s') != 'ok' or 'candles' not in response:
+                print(f"  Fyers historical Nifty fetch: {response.get('message', 'failed')}")
+                return {}
+            result = {}
+            for candle in response['candles']:
+                dt = datetime.fromtimestamp(int(candle[0]), tz=self.ist_tz).date()
+                result[dt] = float(candle[1])   # open price
+            print(f"  Nifty daily opens fetched: {len(result)} trading days")
+            return result
+        except Exception as e:
+            print(f"  Error fetching historical Nifty opens: {e}")
+            return {}
+
+    def get_nifty_open_for_expiry_week(self, expiry_date, nifty_opens):
+        """Return (open_price, price_date) for the Monday of the expiry week.
+
+        Expiry is Tuesday, so Monday = expiry_date - 1 day.  Falls back to the
+        nearest earlier trading day (up to 4 days back) then to the expiry day itself.
+        """
+        monday = expiry_date - timedelta(days=1)
+        for delta in range(0, 5):
+            check_date = monday - timedelta(days=delta)
+            if check_date in nifty_opens:
+                return nifty_opens[check_date], check_date
+        if expiry_date in nifty_opens:
+            return nifty_opens[expiry_date], expiry_date
+        return None, None
+
+    def load_data_from_fyers_for_date_range(self, symbol, from_date, to_date):
+        """Load 1-min option data from Fyers for an explicit calendar date range."""
+        try:
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+            except ImportError:
+                pass
+            client_id = os.environ.get("FYERS_CLIENT_ID", "").strip()
+            access_token = os.environ.get("FYERS_ACCESS_TOKEN", "").strip()
+            if not client_id or not access_token:
+                return None
+            from fyers_apiv3 import fyersModel
+            fyers = fyersModel.FyersModel(
+                client_id=client_id, token=access_token, is_async=False, log_path="")
+            range_from_ts = int(datetime.combine(from_date, time(9, 0)).timestamp())
+            range_to_ts = int(datetime.combine(to_date, time(23, 59)).timestamp())
+            data = {
+                "symbol": symbol, "resolution": "1", "date_format": "0",
+                "range_from": str(range_from_ts), "range_to": str(range_to_ts),
+                "cont_flag": "1"
+            }
+            response = fyers.history(data=data)
+            if response.get('s') != 'ok' or 'candles' not in response:
+                return None
+            candles = response['candles']
+            if not candles:
+                return None
+            df = pd.DataFrame(candles,
+                              columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+            df = df.set_index('timestamp')
+            df.index = df.index.tz_localize('UTC').tz_convert(self.ist_tz).tz_localize(None)
+            df = df.between_time('09:00', '15:30')
+            df = df.dropna(subset=['close', 'high', 'low'])
+            if df.empty:
+                return None
+            df = df[['open', 'high', 'low', 'close', 'volume']].copy()
+            if self.tick_interval:
+                try:
+                    target = pd.tseries.frequencies.to_offset(self.tick_interval)
+                    if target >= pd.tseries.frequencies.to_offset('1T'):
+                        df = self._resample(df, self.tick_interval)
+                except Exception:
+                    pass
+            return df
+        except Exception as e:
+            print(f"    Fyers error for {symbol}: {e}")
+            return None
+
+    def backtest_single_symbol_for_expiry(self, symbol, expiry_date, week_start, week_end):
+        """Backtest one option symbol restricted to its expiry week."""
+        min_pts = self.adx_period * 3
+
+        # Try DB first, then Fyers with explicit date range
+        df = self.load_data_from_all_databases(symbol)
+        if df is None or len(df) < min_pts:
+            df = self.load_data_from_fyers_for_date_range(symbol, week_start, week_end)
+        if df is None or len(df) < min_pts:
+            print(f"    Insufficient data for {symbol}. Skipping.")
+            return None
+
+        # Filter to expiry week only
+        df = df[(df.index.date >= week_start) & (df.index.date <= week_end)].copy()
+        if df.empty or len(df) < min_pts:
+            print(f"    No usable data in {week_start} - {week_end}. Skipping.")
+            return None
+
+        print(f"    Data: {len(df)} rows | "
+              f"{df.index[0].strftime('%d-%b %H:%M')} -> {df.index[-1].strftime('%d-%b %H:%M')}")
+
+        df = self.calculate_adx(df)
+        df = self.calculate_atr(df)
+        df = self.generate_signals(df, symbol)
+        df['trading_day'] = df.index.date
+        df['is_square_off'] = df.index.map(lambda ts: ts.time() >= self.square_off_time)
+
+        cash = self.initial_capital
+        position = 0
+        entry_price = 0
+        entry_time = None
+        trades = []
+        trade_number = 0
+        trades_today = {}
+
+        for i in range(len(df)):
+            row = df.iloc[i]
+            ts = df.index[i]
+            price = row['close']
+            is_sqoff = row['is_square_off']
+            day = row['trading_day']
+            trades_today.setdefault(day, 0)
+
+            if position == 1 and is_sqoff:
+                shares = int(cash / entry_price) if entry_price > 0 else 0
+                pnl = shares * (price - entry_price)
+                ret = ((price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+                trade_number += 1
+                dur = (ts - entry_time).total_seconds() / 60
+                trades.append({
+                    'trade_num': trade_number, 'entry_time': entry_time,
+                    'exit_time': ts, 'entry_price': entry_price,
+                    'exit_price': price, 'shares': shares,
+                    'duration_minutes': dur, 'pnl': pnl, 'return_pct': ret,
+                    'exit_reason': 'SQUARE_OFF', 'adx': row.get('adx', 0),
+                    'di_plus': row.get('di_plus', 0), 'di_minus': row.get('di_minus', 0)})
+                print(f"    [#{trade_number}] SQUARE_OFF "
+                      f"{entry_time.strftime('%H:%M')}->{ts.strftime('%H:%M')} "
+                      f"Rs.{entry_price:.2f}->Rs.{price:.2f}  P&L: Rs.{pnl:+.2f} ({ret:+.2f}%)")
+                position = 0
+                trades_today[day] += 1
+
+            elif position == 0 and row['buy_signal'] and not is_sqoff:
+                if trades_today[day] >= self.max_trades_per_day:
+                    continue
+                position = 1
+                entry_price = price
+                entry_time = ts
+
+            elif position == 1 and row['sell_signal']:
+                shares = int(cash / entry_price) if entry_price > 0 else 0
+                pnl = shares * (price - entry_price)
+                ret = ((price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+                trade_number += 1
+                dur = (ts - entry_time).total_seconds() / 60
+                trades.append({
+                    'trade_num': trade_number, 'entry_time': entry_time,
+                    'exit_time': ts, 'entry_price': entry_price,
+                    'exit_price': price, 'shares': shares,
+                    'duration_minutes': dur, 'pnl': pnl, 'return_pct': ret,
+                    'exit_reason': 'ADX_CROSSOVER', 'adx': row.get('adx', 0),
+                    'di_plus': row.get('di_plus', 0), 'di_minus': row.get('di_minus', 0)})
+                print(f"    [#{trade_number}] ADX_CROSSOVER "
+                      f"{entry_time.strftime('%H:%M')}->{ts.strftime('%H:%M')} "
+                      f"Rs.{entry_price:.2f}->Rs.{price:.2f}  P&L: Rs.{pnl:+.2f} ({ret:+.2f}%)")
+                position = 0
+                trades_today[day] += 1
+
+        metrics = self._calc_metrics(trades)
+        return {
+            'symbol': symbol, 'expiry_date': expiry_date,
+            'week_start': week_start, 'week_end': week_end,
+            'data': df, 'trades': trades, 'metrics': metrics
+        }
+
+    def _run_weekly_expiry_backtest(self):
+        """Iterate over every weekly expiry in the backtest window and backtest each."""
+        now = datetime.now(self.ist_tz).date()
+        start_date = now - timedelta(days=self.backtest_days)
+        end_date = now
+
+        print(f"\n{'='*100}")
+        print(f"WEEKLY EXPIRY BACKTEST MODE  ({self.backtest_days} days)")
+        print(f"Period: {start_date} -> {end_date}")
+        print(f"{'='*100}")
+
+        expiries = self.get_all_weekly_expiries_in_window(start_date, end_date)
+        print(f"\nWeekly expiries found ({len(expiries)}):")
+        for exp in expiries:
+            label = "Monthly" if self.is_last_tuesday_of_month(exp) else "Weekly"
+            print(f"  {exp.strftime('%d-%b-%Y (%a)')}  [{label}]")
+
+        print(f"\n  Fetching Nifty 50 daily opens ({start_date} -> {end_date}) ...")
+        nifty_opens = self._get_historical_nifty_opens(start_date, end_date)
+        if not nifty_opens:
+            print("  WARNING: No Nifty historical data available — ATM strikes cannot be "
+                  "determined.  Ensure FYERS_CLIENT_ID / FYERS_ACCESS_TOKEN are set.")
+
+        for expiry_date in expiries:
+            # Expiry week: Wednesday of previous week -> Tuesday (expiry day)
+            week_start = expiry_date - timedelta(days=6)   # Wednesday
+            week_end = expiry_date                          # Tuesday
+
+            nifty_price, price_date = self.get_nifty_open_for_expiry_week(
+                expiry_date, nifty_opens)
+            if nifty_price is None:
+                print(f"\n  [{expiry_date}] Skipping — no Nifty open found for this week.")
+                continue
+
+            atm_strike = self.get_atm_strike(nifty_price)
+            ce_symbol = self.build_nifty_option_symbol(expiry_date, atm_strike, 'CE')
+            pe_symbol = self.build_nifty_option_symbol(expiry_date, atm_strike, 'PE')
+
+            label = "Monthly" if self.is_last_tuesday_of_month(expiry_date) else "Weekly"
+            print(f"\n{'='*80}")
+            print(f"  Expiry : {expiry_date.strftime('%d-%b-%Y')} [{label}]  |  "
+                  f"Nifty open ({price_date}): {nifty_price:.0f}  |  ATM: {atm_strike}")
+            print(f"  Week   : {week_start} -> {week_end}")
+            print(f"  CE     : {ce_symbol}")
+            print(f"  PE     : {pe_symbol}")
+
+            for symbol in [ce_symbol, pe_symbol]:
+                try:
+                    result = self.backtest_single_symbol_for_expiry(
+                        symbol, expiry_date, week_start, week_end)
+                    if result:
+                        self.results[symbol] = result
+                except Exception as e:
+                    print(f"    Error backtesting {symbol}: {e}")
+
+        self.print_weekly_expiry_summary()
+
+    def print_weekly_expiry_summary(self):
+        if not self.results:
+            print("\nNo results to display.")
+            return
+        print(f"\n{'='*100}")
+        print("WEEKLY EXPIRY BACKTEST SUMMARY")
+        print(f"{'='*100}")
+
+        by_expiry = {}
+        for result in self.results.values():
+            exp = result['expiry_date']
+            by_expiry.setdefault(exp, []).append(result)
+
+        rows = []
+        for exp in sorted(by_expiry.keys()):
+            for result in by_expiry[exp]:
+                m = result['metrics']
+                sym = result['symbol']
+                clean = sym.split(':')[1] if ':' in sym else sym
+                rows.append({
+                    'Expiry': exp.strftime('%d-%b-%Y'),
+                    'Symbol': clean,
+                    'Type': self._detect_symbol_type(sym),
+                    'Trades': m['total_trades'],
+                    'Win Rate': f"{m['win_rate']:.1f}%",
+                    'Total P&L': f"Rs.{m['total_pnl']:+,.2f}",
+                    'Avg P&L': f"Rs.{m['avg_pnl']:+,.2f}",
+                    'Profit Factor': f"{m['profit_factor']:.2f}",
+                })
+
+        if rows:
+            summary_df = pd.DataFrame(rows)
+            print(summary_df.to_string(index=False))
+
+            total_trades = sum(r['metrics']['total_trades'] for r in self.results.values())
+            total_pnl = sum(r['metrics']['total_pnl'] for r in self.results.values())
+            total_wins = sum(r['metrics']['winning_trades'] for r in self.results.values())
+
+            print(f"\n{'='*100}")
+            print("OVERALL STATISTICS")
+            print(f"{'='*100}")
+            print(f"  Expiries Tested  : {len(by_expiry)}")
+            print(f"  Total Pairs      : {len(self.results)}")
+            print(f"  Total Trades     : {total_trades}")
+            print(f"  Total P&L        : Rs.{total_pnl:+,.2f}")
+            if total_trades > 0:
+                print(f"  Overall Win Rate : {total_wins / total_trades * 100:.1f}%")
+
+            os.makedirs('output', exist_ok=True)
+            out_file = f"output/adx_weekly_expiry_{self.backtest_days}days.csv"
+            summary_df.to_csv(out_file, index=False)
+            print(f"\n  Results saved to: {out_file}")
+        print(f"{'='*100}")
+
     # ── Run & Report ─────────────────────────────────────────────────────
 
     def run_backtest(self):
         print(f"\n{'='*100}")
         print("STARTING ADX CROSSOVER BACKTEST")
         print(f"{'='*100}")
+
+        # Weekly expiry mode: backtest_days >= 90 with Nifty ATM
+        if (self.backtest_days is not None and self.backtest_days >= 90
+                and self.use_nifty_atm):
+            self._run_weekly_expiry_backtest()
+            return
+
         for symbol in self.symbols:
             try:
                 result = self.backtest_single_symbol(symbol)
