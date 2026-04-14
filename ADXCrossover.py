@@ -69,7 +69,11 @@ class ADXCrossoverBacktester:
             self.symbols = symbols
         elif self.use_nifty_atm:
             ce_sym, pe_sym = self.fetch_nifty_atm_contracts()
-            self.symbols = [s for s in (ce_sym, pe_sym) if s]
+            if ce_sym and pe_sym:
+                self.symbols = [ce_sym, pe_sym]
+            else:
+                print("ATM fetch failed — no symbols to backtest.")
+                self.symbols = []
         else:
             self.symbols = []
 
@@ -122,75 +126,124 @@ class ADXCrossoverBacktester:
                 load_dotenv()
             except ImportError:
                 pass
+
             client_id = os.environ.get("FYERS_CLIENT_ID", "").strip()
             access_token = os.environ.get("FYERS_ACCESS_TOKEN", "").strip()
+
             if not client_id or not access_token:
                 return None
+
             from fyers_apiv3 import fyersModel
             fyers = fyersModel.FyersModel(
-                client_id=client_id, token=access_token,
-                is_async=False, log_path="")
+                client_id=client_id,
+                token=access_token,
+                is_async=False,
+                log_path=""
+            )
+
             today = datetime.now(self.ist_tz).date()
-            wd = today.weekday()
-            if wd == 5:
+            # Roll back to Friday if today is Saturday (5) or Sunday (6)
+            weekday = today.weekday()
+            if weekday == 5:        # Saturday → go back 1 day to Friday
                 trading_day = today - timedelta(days=1)
-            elif wd == 6:
+            elif weekday == 6:      # Sunday → go back 2 days to Friday
                 trading_day = today - timedelta(days=2)
             else:
                 trading_day = today
             data = {
-                "symbol": "NSE:NIFTY50-INDEX", "resolution": "1",
-                "date_format": "1", "range_from": str(trading_day),
-                "range_to": str(trading_day), "cont_flag": "1"
+                "symbol": "NSE:NIFTY50-INDEX",
+                "resolution": "1",
+                "date_format": "1",
+                "range_from": str(trading_day),
+                "range_to": str(trading_day),
+                "cont_flag": "1"
             }
+
             response = fyers.history(data=data)
             if response.get('s') == 'ok' and response.get('candles'):
+                # candles[0] → [timestamp, open, high, low, close, volume]
                 return float(response['candles'][0][1])
+
             return None
+
         except Exception as e:
-            print(f"  Fyers API error: {e}")
+            print(f"  Fyers API error while fetching Nifty open: {e}")
             return None
 
     def _get_nifty_open_from_db(self):
-        candidates = ["NSE:NIFTY50-INDEX", "NIFTY50-INDEX",
-                       "NSE:NIFTY-INDEX", "NIFTY50", "NIFTY 50"]
+        nifty_candidates = [
+            "NSE:NIFTY50-INDEX",
+            "NIFTY50-INDEX",
+            "NSE:NIFTY-INDEX",
+            "NIFTY50",
+            "NIFTY 50",
+        ]
+
         for db_file in self.db_files:
             try:
                 conn = sqlite3.connect(db_file)
-                for sym in candidates:
-                    df = pd.read_sql_query(
-                        "SELECT ltp FROM market_data WHERE symbol=? ORDER BY timestamp ASC LIMIT 1",
-                        conn, params=(sym,))
+                for sym in nifty_candidates:
+                    query = """
+                    SELECT ltp
+                    FROM market_data
+                    WHERE symbol = ?
+                    ORDER BY timestamp ASC
+                    LIMIT 1
+                    """
+                    df = pd.read_sql_query(query, conn, params=(sym,))
                     if not df.empty:
                         conn.close()
                         return float(df.iloc[0]['ltp'])
                 conn.close()
             except Exception:
                 continue
+
         return None
 
     def fetch_nifty_atm_contracts(self, reference_date=None):
         print("\n" + "=" * 60)
         print("  NIFTY ATM CONTRACT SELECTION")
         print("=" * 60)
+
+        # Step 1 — expiry date
         expiry_date = self.get_weekly_expiry_date(reference_date)
         expiry_label = "Monthly" if self.is_last_tuesday_of_month(expiry_date) else "Weekly"
-        print(f"  Expiry : {expiry_date.strftime('%d-%b-%Y')} ({expiry_label})")
+        print(f"  Expiry Date  : {expiry_date.strftime('%d-%b-%Y')} ({expiry_label})")
+
+        # Step 2 — Nifty 50 opening price
+        print("  Fetching Nifty 50 opening price...")
         nifty_open = self._get_nifty_open_from_fyers()
-        if nifty_open is None:
+        if nifty_open is not None:
+            print(f"  Price Source : Fyers API")
+        else:
+            print("  Fyers API unavailable — trying local database...")
             nifty_open = self._get_nifty_open_from_db()
+            if nifty_open is not None:
+                print(f"  Price Source : Local Database")
+
         if nifty_open is None:
-            print("  ERROR: Could not fetch Nifty 50 opening price.")
+            print("  ERROR: Could not fetch Nifty 50 opening price from any source.")
+            print("         Set FYERS_CLIENT_ID / FYERS_ACCESS_TOKEN in .env, or")
+            print("         ensure Nifty index data exists in the database.")
+            print("=" * 60)
             return None, None
-        print(f"  Nifty Open : Rs.{nifty_open:,.2f}")
+
+        print(f"  Nifty Open   : ₹{nifty_open:,.2f}")
+
+        # Step 3 — ATM strike
         atm_strike = self.get_atm_strike(nifty_open)
-        print(f"  ATM Strike : {atm_strike}")
-        ce = self.build_nifty_option_symbol(expiry_date, atm_strike, 'CE')
-        pe = self.build_nifty_option_symbol(expiry_date, atm_strike, 'PE')
-        print(f"  CE : {ce}")
-        print(f"  PE : {pe}")
+        print(f"  ATM Strike   : {atm_strike} "
+              f"(nearest {self.nifty_strike_interval}-pt interval)")
+
+        # Step 4 — Build symbols
+        ce_symbol = self.build_nifty_option_symbol(expiry_date, atm_strike, 'CE')
+        pe_symbol = self.build_nifty_option_symbol(expiry_date, atm_strike, 'PE')
+
+        print(f"  CE Symbol    : {ce_symbol}")
+        print(f"  PE Symbol    : {pe_symbol}")
         print("=" * 60 + "\n")
-        return ce, pe
+
+        return ce_symbol, pe_symbol
 
     # ── Data loading ─────────────────────────────────────────────────────
 
