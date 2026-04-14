@@ -95,7 +95,7 @@ trailing_stop = entry_price - (entry_atr * 2.0)  # 2x ATR
 ### Step 1: Run the Improved Strategy
 ```bash
 cd /home/user/BackTest
-python3 AdvancedHeikinAshi.py
+python3 AdvancedHeikinAshiWeeklyOption.py
 ```
 
 ### Step 2: Compare Results
@@ -244,10 +244,10 @@ ImprovedAdvancedHeikinAshiBacktester(
 1. **Run Both Strategies**
    ```bash
    # Original
-   python3 AdvancedHeikinAshi.py
+   python3 AdvancedHeikinAshiWeeklyOption.py
 
    # Improved
-   python3 AdvancedHeikinAshi.py
+   python3 AdvancedHeikinAshiWeeklyOption.py
    ```
 
 2. **Compare CSVs**

@@ -19,7 +19,7 @@ class ADXCrossoverBacktester:
     Exit  : Crossover reverses (direction flips from +ve to -ve)
 
     Uses the same dynamic Nifty ATM option contract selection as
-    AdvancedHeikinAshi.py.
+    AdvancedHeikinAshiWeeklyOption.py.
     """
 
     def __init__(self, data_folder="data", symbols=None,
@@ -100,7 +100,7 @@ class ADXCrossoverBacktester:
             return []
         return sorted(glob.glob(os.path.join(self.data_folder, "*.db")))
 
-    # ── Nifty ATM contract selection (same as AdvancedHeikinAshi.py) ─────
+    # ── Nifty ATM contract selection (same as AdvancedHeikinAshiWeeklyOption.py) ─────
 
     def get_weekly_expiry_date(self, reference_date=None):
         if reference_date is None:
