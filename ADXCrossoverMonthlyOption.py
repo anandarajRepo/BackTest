@@ -845,7 +845,7 @@ if __name__ == "__main__":
     # Example 1: Backtest with ATM contract selection
     bt = ADXCrossoverMonthlyBacktester(
         data_folder="data/symbolupdate",
-        instruments=['BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'GOLD', 'SILVER'],
+        instruments=['NIFTYBANK-INDEX', 'FINNIFTY-INDEX', 'MIDCPNIFTY-INDEX', 'GOLDBEES-EQ', 'SILVERBEES-EQ'],
 
         # ADX settings
         adx_period=14,
