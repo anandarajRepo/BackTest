@@ -31,19 +31,22 @@ class ADXCrossoverMonthlyBacktester:
             'strike_interval': 100,
             'type': 'index_option',
             'symbol_prefix': 'NSE:BANKNIFTY',
-            'expiry_format': 'monthly'  # Last Thursday
+            'expiry_format': 'monthly',  # Last Monday (effective April 2025)
+            'lot_size': 30  # Updated Dec 30, 2025 (previously 35)
         },
         'FINNIFTY': {
             'strike_interval': 50,
             'type': 'index_option',
             'symbol_prefix': 'NSE:FINNIFTY',
-            'expiry_format': 'monthly'  # Last Thursday
+            'expiry_format': 'monthly',  # Last Monday (effective April 2025)
+            'lot_size': 60  # Updated Dec 30, 2025 (previously 65)
         },
         'MIDCPNIFTY': {
             'strike_interval': 50,
             'type': 'index_option',
             'symbol_prefix': 'NSE:MIDCPNIFTY',
-            'expiry_format': 'monthly'  # Last Thursday
+            'expiry_format': 'monthly',  # Last Monday (effective April 2025)
+            'lot_size': 120  # Updated Dec 30, 2025 (previously 140)
         },
         'GOLD': {
             'strike_interval': 1,
@@ -139,7 +142,8 @@ class ADXCrossoverMonthlyBacktester:
 
     def get_monthly_expiry_date(self, reference_date=None):
         """
-        Return the monthly expiry date (last Thursday of the month).
+        Return the monthly expiry date (last Monday of the month).
+        Note: Effective April 2025, NSE moved derivative expiry from Thursday to Monday.
         """
         if reference_date is None:
             reference_date = datetime.now(self.ist_tz).date()
@@ -152,9 +156,9 @@ class ADXCrossoverMonthlyBacktester:
 
         last_day = next_month - timedelta(days=1)
 
-        # Find last Thursday
-        days_back = (last_day.weekday() - 3) % 7  # 3 is Thursday
-        if days_back == 0 and last_day.weekday() != 3:
+        # Find last Monday (weekday() returns 0 for Monday)
+        days_back = (last_day.weekday() - 0) % 7  # 0 is Monday
+        if days_back == 0 and last_day.weekday() != 0:
             days_back = 7
         return last_day - timedelta(days=days_back)
 
