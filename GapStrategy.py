@@ -123,6 +123,16 @@ class GapStrategyBacktester:
         self.range_from = int(start_date.timestamp())
         self.range_to = int(end_date.timestamp())
 
+        # For sub-minute resolutions (e.g. "5S") Fyers limits history to ~30 calendar
+        # days, which isn't enough for behavior analysis.  Pre-compute a separate date
+        # range so we can fetch daily candles independently for the lookback window.
+        self.is_subminute = ('S' in candle_interval.upper() and 'MIN' not in candle_interval.upper())
+        if self.is_subminute:
+            daily_total_days = behavior_lookback_days + backtest_days + 60
+            daily_start = end_date - timedelta(days=daily_total_days)
+            self.daily_range_from = int(daily_start.timestamp())
+            self.daily_range_to = int(end_date.timestamp())
+
         # Derive Fyers API resolution from candle_interval (e.g. "5min" → "5")
         self.fyers_resolution = candle_interval.replace('min', '').replace('T', '').strip()
 
@@ -306,6 +316,39 @@ class GapStrategyBacktester:
         agg = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
         daily = session.resample('D').agg(agg)
         return daily.dropna(subset=['open', 'close'])
+
+    def _load_daily_candles_from_fyers(self, symbol):
+        """Fetch daily (end-of-day) OHLCV from Fyers for the behavior-analysis window.
+
+        Used when the primary candle resolution is sub-minute, because the Fyers API
+        limits sub-minute history to ~30 calendar days — not enough for lookback.
+        """
+        try:
+            data = {
+                "symbol": symbol,
+                "resolution": "D",
+                "date_format": "0",
+                "range_from": str(self.daily_range_from),
+                "range_to": str(self.daily_range_to),
+                "cont_flag": "1"
+            }
+            response = self.fyers.history(data=data)
+            if response.get('s') != 'ok' or 'candles' not in response:
+                return None
+            candles = response['candles']
+            if not candles:
+                return None
+            df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+            df = df.set_index('timestamp')
+            df.index = df.index.tz_localize('UTC').tz_convert(self.ist_tz)
+            df.index = df.index.tz_localize(None)
+            df.index = df.index.normalize()  # strip time so date-based lookups match
+            df = df.dropna(subset=['open', 'close', 'high', 'low'])
+            return df[['open', 'high', 'low', 'close', 'volume']].copy()
+        except Exception as e:
+            print(f"  Error loading daily candles for {symbol}: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # ATR calculation
@@ -766,8 +809,16 @@ class GapStrategyBacktester:
             print(f"  Insufficient data for {symbol}. Skipping.")
             return None
 
-        # Build daily candles from intraday data
-        daily = self._to_daily_candles(intra)
+        # Build daily candles for behavior analysis.
+        # For sub-minute resolutions the Fyers API only returns ~30 calendar days of
+        # tick data, which isn't enough for the lookback window.  Fetch end-of-day
+        # candles separately (resolution "D") which carry much longer history.
+        if self.is_subminute:
+            daily = self._load_daily_candles_from_fyers(symbol)
+            if daily is None or daily.empty:
+                daily = self._to_daily_candles(intra)
+        else:
+            daily = self._to_daily_candles(intra)
         intra = intra.between_time('09:15', '15:30')
 
         if daily.empty or len(daily) < self.behavior_lookback_days + 2:
